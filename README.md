@@ -1,6 +1,6 @@
 # Voice Logger
 
-Windows background service that continuously records meeting audio, transcribes it with Whisper, identifies speakers with pyannote, and syncs structured Markdown transcripts to Google Drive for NotebookLM ingestion.
+Windows background service that continuously records meeting audio, transcribes it with Whisper, identifies speakers with pyannote, and syncs structured Markdown transcripts to Obsidian.
 
 ## Features
 
@@ -91,7 +91,7 @@ start.bat
 └── dashboard_server.py  — Flask API + static dashboard UI
 ```
 
-Transcripts are saved as Markdown to `transcripts/YYYY-MM-DD/` and merged into session files under `transcripts/sessions/`. Permanent per-category files in `transcripts/permanent/` are uploaded to Google Drive.
+Transcripts are saved as Markdown to `transcripts/YYYY-MM-DD/` and merged into session files under `transcripts/sessions/`. Permanent per-category files in `transcripts/permanent/` are synced to Obsidian.
 
 ## License
 
