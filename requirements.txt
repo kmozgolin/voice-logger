@@ -1,0 +1,27 @@
+# Core
+openai-whisper>=20231117
+sounddevice>=0.4.6
+soundfile>=0.12.1
+numpy>=1.24.0
+
+# Speaker diarization & identification
+pyannote.audio>=3.1.0        # diarization pipeline
+# Note: pyannote.audio requires a HuggingFace token.
+# Accept model cards at huggingface.co/pyannote/speaker-diarization-3.1
+# and huggingface.co/pyannote/segmentation-3.0, then add token to config.json
+
+# Google Drive (for NotebookLM)
+google-auth>=2.23.0
+google-auth-oauthlib>=1.1.0
+google-auth-httplib2>=0.1.1
+google-api-python-client>=2.100.0
+
+# Dashboard web server
+flask>=3.0.0
+flask-cors>=4.0.0
+
+# Windows toast notifications for labeling prompts
+win10toast>=0.9
+
+# Windows only – Outlook integration
+pywin32>=306

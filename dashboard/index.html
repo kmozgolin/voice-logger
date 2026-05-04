@@ -1,0 +1,2833 @@
+﻿<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Voice Logger · Monitor</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600&family=IBM+Plex+Sans:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg:     #09090e;
+    --s1:     #0f0f18;
+    --s2:     #14141f;
+    --border: #1c1c2e;
+    --accent: #7c6af7;
+    --green:  #3de8a0;
+    --warn:   #f7c86c;
+    --danger: #f76c6c;
+    --text:   #d4d4e8;
+    --muted:  #4a4a6a;
+    --muted2: #6a6a8a;
+    --mono: 'IBM Plex Mono', monospace;
+    --sans: 'IBM Plex Sans', sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: var(--mono);
+    background: var(--bg);
+    color: var(--text);
+    height: 100vh;
+    display: grid;
+    grid-template-rows: 52px auto 1fr;
+    grid-template-columns: 1fr 1fr 1fr;
+    grid-template-areas: "hdr hdr hdr" "tl tl tl" "left mid right";
+    overflow: hidden;
+  }
+
+  /* ── Header ── */
+  header {
+    grid-area: hdr;
+    display: flex; align-items: center;
+    padding: 0 24px;
+    border-bottom: 1px solid var(--border);
+    background: var(--s1);
+  }
+  .logo { font-size: 12px; letter-spacing: .18em; text-transform: uppercase; color: var(--accent); font-weight: 600; margin-right: 32px; }
+  .logo span { color: var(--muted2); }
+  .hdr-tabs { display: flex; flex: 1; }
+  .hdr-tab {
+    padding: 0 20px; height: 52px; display: flex; align-items: center; gap: 6px;
+    font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+    color: var(--muted2); border-bottom: 2px solid transparent;
+    cursor: pointer; transition: all .15s; user-select: none;
+  }
+  .hdr-tab.active { color: var(--text); border-bottom-color: var(--accent); }
+  .hdr-tab:hover { color: var(--text); }
+  .hdr-badge-cnt { background: rgba(247,108,108,.2); color: var(--danger); padding: 1px 6px; border-radius: 8px; font-size: 9px; }
+  .hdr-right { display: flex; align-items: center; gap: 10px; }
+  .rec-btn { display: flex; align-items: center; gap: 7px; padding: 7px 16px; border-radius: 6px; border: 1px solid var(--danger); background: rgba(247,108,108,.1); color: var(--danger); font-family: var(--mono); font-size: 11px; cursor: pointer; letter-spacing: .05em; }
+  .rec-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--danger); animation: pulse 1.2s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.4;transform:scale(.75)} }
+  .hdr-status-badge { font-size: 10px; padding: 4px 10px; border-radius: 10px; border: 1px solid var(--border); color: var(--muted2); }
+
+  /* ── Columns ── */
+  .col { padding: 20px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--border) transparent; border-right: 1px solid var(--border); display: flex; flex-direction: column; gap: 16px; }
+  .col:last-child { border-right: none; }
+
+  /* ── Card ── */
+  .card { background: var(--s1); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+  .card-head { padding: 12px 16px; border-bottom: 1px solid var(--border); font-size: 9px; letter-spacing: .15em; text-transform: uppercase; color: var(--muted2); display: flex; justify-content: space-between; align-items: center; cursor: pointer; user-select: none; }
+  .card-body { padding: 16px; }
+  .card-arrow { font-size: 10px; color: var(--muted2); transition: transform .2s; flex-shrink: 0; padding-left: 8px; }
+  .card.collapsed .card-arrow { transform: rotate(-90deg); }
+  .card-content { overflow: hidden; transition: max-height .25s ease, opacity .2s ease; }
+  .card.collapsed .card-content { max-height: 0 !important; opacity: 0; pointer-events: none; }
+
+  /* ── Status ── */
+  .status-hero { padding: 20px; display: flex; flex-direction: column; gap: 10px; }
+  .state-badge { display: inline-flex; align-items: center; gap: 6px; padding: 4px 12px; border-radius: 10px; font-family: var(--mono); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; margin-bottom: 4px; }
+  .state-badge.init     { border: 1px solid rgba(124,106,247,.4); color: var(--accent);  background: rgba(124,106,247,.08); }
+  .state-badge.standby  { border: 1px solid rgba(61,232,160,.4);  color: var(--green);   background: rgba(61,232,160,.08); }
+  .state-badge.recording{ border: 1px solid rgba(247,108,108,.4); color: var(--danger);  background: rgba(247,108,108,.08); }
+  .state-badge.off      { border: 1px solid var(--border);        color: var(--muted2);  background: transparent; }
+  .status-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .status-since { font-size: 11px; color: var(--muted2); line-height: 1; }
+
+  /* Chunk progress */
+  .chunk-progress-wrap { margin: 0 20px 20px; }
+  .chunk-row-top { display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 10px; color: var(--muted2); }
+  .chunk-pct { color: var(--text); font-weight: 500; }
+  .progress-track { height: 4px; background: var(--border); border-radius: 2px; overflow: hidden; }
+  .progress-fill { height: 100%; border-radius: 2px; background: linear-gradient(90deg, var(--accent), var(--green)); transition: width 1s linear; }
+  .chunk-time { margin-top: 6px; text-align: right; font-size: 10px; color: var(--muted2); }
+  .chunk-time strong { color: var(--text); font-weight: 500; }
+
+  /* Controls */
+  .state-controls { padding: 0 20px 20px; display: flex; gap: 8px; flex-wrap: wrap; }
+  .state-btn { padding: 8px 18px; border-radius: 7px; border: 1px solid var(--border); background: transparent; color: var(--text); font-family: var(--mono); font-size: 11px; cursor: pointer; letter-spacing: .05em; transition: all .15s; }
+  .state-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .state-btn:disabled { opacity: .35; cursor: not-allowed; }
+  .state-btn.primary { background: var(--green); border-color: var(--green); color: #0a0a0f; font-weight: 500; }
+  .state-btn.primary:hover { background: #2fd490; border-color: #2fd490; }
+  .state-btn.danger { border-color: rgba(247,108,108,.4); color: var(--danger); background: rgba(247,108,108,.07); }
+  .state-btn.danger:hover { background: rgba(247,108,108,.15); border-color: var(--danger); }
+
+  /* Status rows (two-row redesign) */
+  .status-off-row { padding: 18px 20px 20px; display: flex; align-items: center; gap: 12px; }
+  .status-rows { display: flex; flex-direction: column; }
+  .status-row { padding: 13px 20px 10px; display: flex; flex-direction: column; gap: 8px; }
+  .status-row + .status-row { border-top: 1px solid var(--border); }
+  .sr-row-top { display: flex; align-items: center; gap: 12px; }
+  .sr-dot-wrap { width: 20px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
+  .sr-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted2); }
+  .sr-content { flex: 1; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .sr-label { font-size: 9px; letter-spacing: .15em; text-transform: uppercase; color: var(--muted2); }
+  .sr-status { font-size: 11px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sr-btn { padding: 5px 12px; border-radius: 6px; border: 1px solid var(--border); background: transparent; color: var(--muted2); font-family: var(--mono); font-size: 10px; cursor: pointer; letter-spacing: .05em; transition: all .15s; white-space: nowrap; flex-shrink: 0; }
+  .sr-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .sr-btn:disabled { opacity: .35; cursor: not-allowed; }
+  .sr-btn.active { border-color: rgba(247,108,108,.4); color: var(--danger); background: rgba(247,108,108,.07); }
+  .sr-btn.resume { border-color: rgba(61,232,160,.4); color: var(--green); background: rgba(61,232,160,.07); }
+  /* Per-row progress bars */
+  .sr-progress { display: none; padding: 0 2px 4px; }
+  .sr-progress-track { height: 3px; background: var(--border); border-radius: 2px; overflow: hidden; }
+  .sr-progress-fill { height: 100%; border-radius: 2px; transition: width .8s linear; }
+  .sr-progress-fill.rec  { background: linear-gradient(90deg, var(--danger), var(--warn)); }
+  .sr-progress-fill.proc { background: linear-gradient(90deg, var(--accent), var(--green)); }
+  .sr-progress-fill.indeterminate { width: 35% !important; background: var(--warn); animation: sr-slide 1.4s ease-in-out infinite; transition: none; }
+  .sr-progress-info { font-size: 10px; color: var(--muted2); margin-top: 5px; text-align: right; }
+  @keyframes sr-slide { 0% { transform: translateX(-100%); } 100% { transform: translateX(350%); } }
+
+  /* Gauges */
+  .gauge-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 16px; }
+  .gauge { background: var(--s2); border: 1px solid var(--border); border-radius: 8px; padding: 14px 14px 12px; }
+  .gauge-label { font-size: 9px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted2); margin-bottom: 8px; }
+  .gauge-val { font-size: 28px; font-weight: 300; line-height: 1; margin-bottom: 6px; }
+  .gauge-val.accent { color: var(--accent); }
+  .gauge-val.green  { color: var(--green); }
+  .gauge-val.warn   { color: var(--warn); }
+  .gauge-val.danger { color: var(--danger); }
+  .gauge-sub { font-size: 10px; color: var(--muted2); }
+  .mini-bar { height: 3px; background: var(--border); border-radius: 2px; overflow: hidden; margin-top: 8px; }
+  .mini-bar-fill { height: 100%; border-radius: 2px; transition: width .6s ease; }
+
+  /* Config grid */
+  .cfg-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 14px 16px; }
+  .cfg-item { background: var(--s2); border: 1px solid var(--border); border-radius: 7px; padding: 10px 12px; }
+  .cfg-key { font-size: 9px; text-transform: uppercase; letter-spacing: .1em; color: var(--muted2); margin-bottom: 4px; }
+  .cfg-val { font-size: 13px; color: var(--text); }
+  .cfg-val.accent { color: var(--accent); }
+  .cfg-val.warn   { color: var(--warn); }
+  .cfg-val.green  { color: var(--green); }
+
+  /* Loopback toggle row */
+  .loopback-row { padding: 12px 16px 16px; display: flex; align-items: center; justify-content: space-between; }
+  .loopback-row-text { font-size: 11px; color: var(--text); }
+  .loopback-row-sub  { font-size: 9px; color: var(--muted2); margin-top: 2px; }
+  .toggle { width: 36px; height: 20px; background: var(--border); border-radius: 10px; position: relative; cursor: pointer; border: none; flex-shrink: 0; transition: background .2s; }
+  .toggle.on { background: var(--green); }
+  .toggle::after { content: ''; position: absolute; top: 3px; left: 3px; width: 14px; height: 14px; border-radius: 50%; background: white; transition: transform .2s; }
+  .toggle.on::after { transform: translateX(16px); }
+
+  /* Resource sliders */
+  .res-sliders { display: flex; flex-direction: column; gap: 14px; padding: 14px 16px; }
+  .res-row { display: flex; flex-direction: column; gap: 6px; }
+  .res-row-top { display: flex; justify-content: space-between; align-items: baseline; }
+  .res-name { font-size: 11px; color: var(--text); }
+  .res-sub  { font-size: 9px; color: var(--muted2); }
+  .res-val  { font-size: 13px; font-weight: 500; }
+  input[type=range] { -webkit-appearance: none; width: 100%; height: 4px; border-radius: 2px; background: var(--border); outline: none; cursor: pointer; }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%; background: var(--text); cursor: pointer; border: 2px solid var(--bg); box-shadow: 0 0 0 1px var(--muted); }
+  input[type=range].cpu-range::-webkit-slider-thumb { background: var(--warn); }
+  input[type=range].ram-range::-webkit-slider-thumb { background: var(--green); }
+  input[type=range].gpu-range::-webkit-slider-thumb { background: var(--danger); }
+  input[type=range].par-range::-webkit-slider-thumb { background: var(--accent); }
+  .res-apply { margin: 0 16px 16px; padding: 7px; border-radius: 6px; border: 1px solid var(--accent); background: rgba(124,106,247,.12); color: var(--accent); font-family: var(--mono); font-size: 11px; cursor: pointer; width: calc(100% - 32px); letter-spacing: .05em; transition: background .15s; }
+  .res-apply:hover { background: rgba(124,106,247,.22); }
+
+  /* Activity log */
+  .activity-log { display: flex; flex-direction: column; }
+  .log-entry { display: flex; gap: 10px; align-items: flex-start; padding: 8px 16px; border-bottom: 1px solid rgba(255,255,255,.03); font-size: 11px; line-height: 1.5; }
+  .log-entry:last-child { border-bottom: none; }
+  .log-time { color: var(--muted); flex-shrink: 0; width: 44px; text-align: right; font-size: 10px; margin-top: 1px; }
+  .log-icon { width: 16px; flex-shrink: 0; text-align: center; font-size: 12px; }
+  .log-text { color: var(--text); flex: 1; }
+  .log-text .dim { color: var(--muted2); }
+  .log-badge { font-size: 9px; padding: 1px 6px; border-radius: 4px; vertical-align: middle; margin-left: 4px; }
+  .log-badge.ok   { background: rgba(61,232,160,.12);  color: var(--green); }
+  .log-badge.warn { background: rgba(247,200,108,.12); color: var(--warn); }
+  .log-badge.err  { background: rgba(247,108,108,.12); color: var(--danger); }
+  .log-empty { padding: 20px 16px; text-align: center; font-size: 11px; color: var(--muted2); }
+
+  /* Error log */
+  .err-list { display: flex; flex-direction: column; }
+  .err-scroll { max-height: 320px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+  .err-section-hdr { padding: 6px 16px; font-size: 9px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted2); background: rgba(255,255,255,.02); border-bottom: 1px solid var(--border); }
+  .err-entry { display: flex; gap: 10px; align-items: flex-start; padding: 8px 16px; border-bottom: 1px solid rgba(247,108,108,.08); font-size: 11px; line-height: 1.5; }
+  .err-entry:last-child { border-bottom: none; }
+  .err-time { color: var(--muted); flex-shrink: 0; width: 52px; text-align: right; font-size: 10px; margin-top: 2px; }
+  .err-text { flex: 1; word-break: break-word; }
+  .err-title { color: var(--danger); font-weight: 500; }
+  .err-title.warn { color: var(--warn); }
+  .err-detail { font-size: 10px; color: var(--muted); margin-top: 3px; line-height: 1.5; }
+  .err-source { font-size: 9px; color: var(--muted2); margin-top: 3px; font-family: var(--mono); }
+  .err-entry[data-tip] { cursor: help; }
+  .err-entry[data-tip]:hover::after {
+    content: attr(data-tip);
+    position: absolute; left: 0; top: calc(100% + 4px); z-index: 200;
+    background: #13131f; border: 1px solid var(--accent);
+    border-radius: 8px; padding: 10px 14px;
+    font-size: 11px; color: var(--text); line-height: 1.65;
+    white-space: pre-wrap; max-width: 380px; min-width: 220px;
+    box-shadow: 0 6px 24px rgba(0,0,0,.5);
+    pointer-events: none;
+  }
+  .err-ctx  { display: block; font-size: 10px; color: var(--muted2); margin-top: 2px; }
+  .err-empty { padding: 20px 16px; text-align: center; font-size: 11px; color: var(--muted2); }
+
+  /* Timeline strip (full width, between header and columns) */
+  #timeline-strip {
+    grid-area: tl;
+    background: var(--s1);
+    border-bottom: 1px solid var(--border);
+    padding: 10px 28px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+  }
+  .tl-strip-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; }
+  .tl-strip-title { font-size: 9px; letter-spacing: .15em; text-transform: uppercase; color: var(--muted2); }
+  .tl-legend { display: flex; gap: 16px; }
+  .tl-leg-item { display: flex; align-items: center; gap: 5px; font-size: 9px; color: var(--muted2); }
+  .tl-leg-dot { width: 10px; height: 5px; border-radius: 1px; flex-shrink: 0; }
+
+  /* Day coverage — single timeline */
+  .day-cover-wrap { padding: 12px 16px 14px; }
+  /* axis */
+  .tl-axis { position: relative; height: 16px; margin-bottom: 5px; }
+  .tl-tick  { position: absolute; font-size: 9px; color: var(--muted); letter-spacing: .04em; transform: translateX(-50%); white-space: nowrap; }
+  .tl-tick:first-child { transform: none; }
+  .tl-tick:last-child  { transform: translateX(-100%); }
+  /* track */
+  .tl-track { position: relative; height: 24px; background: var(--s2); border-radius: 4px; }
+  .tl-meet  { position: absolute; top: 0; bottom: 0; background: var(--border); border-radius: 3px; overflow: hidden; box-sizing: border-box; border: 1px solid rgba(255,255,255,0.07); }
+  .tl-chunk { position: absolute; top: 1px; bottom: 1px; border-radius: 1px; min-width: 2px; }
+  .tl-chunk.done    { background: var(--green); opacity: .88; }
+  .tl-chunk.active  { background: var(--warn); animation: dcpulse 1.5s infinite; }
+  .tl-chunk.queued  { background: #6a5acd; }
+  .tl-chunk.pending { background: var(--muted); opacity: .5; }
+  /* labels row */
+  .tl-labels { position: relative; height: 36px; margin-top: 5px; }
+  .tl-label  { position: absolute; font-size: 10px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 0 3px; }
+  .tl-label-alt { cursor: pointer; }
+  .tl-label-alt::after { content: ' ↻'; color: var(--muted); font-size: 9px; }
+  /* legend */
+  .dc-legend { display: grid; grid-template-columns: 1fr 1fr; gap: 5px 14px; margin-top: 12px; }
+  .dc-leg-item { display: flex; align-items: center; gap: 6px; font-size: 9px; color: var(--muted2); }
+  .dc-leg-dot { width: 10px; height: 6px; border-radius: 2px; flex-shrink: 0; }
+  @keyframes dcpulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+
+  /* Sessions */
+  .session-list { display: flex; flex-direction: column; }
+  .sess-row { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid rgba(255,255,255,.03); cursor: pointer; transition: background .1s; }
+  .sess-row:hover { background: rgba(124,106,247,.06); }
+  .sess-row:last-child { border-bottom: none; }
+  .sess-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; background: var(--border); }
+  .sess-name { flex: 1; font-size: 11px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sess-cat { font-size: 9px; padding: 1px 6px; border-radius: 4px; background: var(--border); color: var(--muted2); flex-shrink: 0; }
+  .sess-date { font-size: 10px; color: var(--muted); flex-shrink: 0; }
+
+  /* ── Speakers tab ── */
+  #tab-speakers { background: var(--bg); overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+  .spk-tab-layout { padding: 32px 40px; max-width: 960px; }
+  .spk-tab-title { font-size: 20px; font-weight: 300; color: var(--text); margin-bottom: 6px; }
+  .spk-tab-sub   { font-size: 12px; color: var(--muted2); margin-bottom: 28px; }
+
+  .pending-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 28px; }
+  .pending-card { background: var(--s1); border: 1px solid rgba(247,108,108,.25); border-radius: 10px; padding: 18px; }
+  .pending-card-meta { font-size: 9px; text-transform: uppercase; letter-spacing: .12em; color: var(--muted2); margin-bottom: 10px; }
+  .pending-samples { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+  .pending-sample { font-size: 12px; color: var(--muted2); border-left: 2px solid rgba(247,108,108,.4); padding-left: 10px; line-height: 1.6; font-style: italic; }
+  .pending-card-audio { margin-bottom: 12px; }
+  .pending-card-audio audio { width: 100%; height: 28px; outline: none; }
+  .pending-row { display: flex; gap: 8px; }
+  .pending-input { flex: 1; background: var(--border); border: 1px solid rgba(247,108,108,.3); color: var(--text); font-family: var(--mono); font-size: 12px; padding: 8px 12px; border-radius: 7px; outline: none; }
+  .pending-input:focus { border-color: var(--danger); }
+  .btn { padding: 6px 14px; border-radius: 6px; border: 1px solid var(--border); background: transparent; color: var(--text); font-family: var(--mono); font-size: 11px; cursor: pointer; transition: all .15s; letter-spacing: .05em; }
+  .btn:hover { border-color: var(--accent); color: var(--accent); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn.primary:hover { background: #6b59e6; }
+  .btn.danger  { border-color: rgba(247,108,108,.4); color: var(--danger); }
+  .btn.danger:hover  { background: rgba(247,108,108,.12); }
+
+  /* Similar pairs section */
+  .sim-section { margin-bottom: 28px; }
+  .sim-section-head { font-size: 9px; text-transform: uppercase; letter-spacing: .15em; color: var(--warn); margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
+  .sim-count-badge { background: rgba(247,200,108,.12); border: 1px solid rgba(247,200,108,.3); color: var(--warn); padding: 1px 8px; border-radius: 8px; font-size: 10px; }
+  .sim-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .sim-pair { background: var(--s1); border: 1px solid rgba(247,200,108,.2); border-radius: 10px; overflow: hidden; }
+  .sim-pair-score { display: flex; justify-content: center; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--border); gap: 8px; font-size: 10px; color: var(--muted2); }
+  .sim-score-bar { flex: 1; height: 3px; background: var(--border); border-radius: 2px; overflow: hidden; }
+  .sim-score-fill { height: 100%; border-radius: 2px; background: var(--warn); }
+  .sim-score-val { font-size: 11px; font-weight: 500; color: var(--warn); flex-shrink: 0; }
+  .sim-sides { display: grid; grid-template-columns: 1fr 1fr; }
+  .sim-side { padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; }
+  .sim-side + .sim-side { border-left: 1px solid var(--border); }
+  .sim-side-name { font-size: 13px; color: var(--text); display: flex; align-items: center; gap: 7px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sim-side-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .sim-side-meta { font-size: 10px; color: var(--muted2); }
+  .sim-play-btn { padding: 5px 12px; border-radius: 6px; border: 1px solid var(--border); background: transparent; color: var(--muted2); font-family: var(--mono); font-size: 10px; cursor: pointer; transition: all .15s; align-self: flex-start; }
+  .sim-play-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .sim-play-btn.playing { border-color: var(--green); color: var(--green); }
+  .sim-play-btn:disabled { opacity: .4; cursor: not-allowed; }
+  .sim-actions { display: flex; gap: 8px; padding: 10px 16px; border-top: 1px solid var(--border); background: rgba(255,255,255,.015); }
+  .sim-merge-btn { flex: 1; padding: 7px; border-radius: 7px; border: 1px solid rgba(61,232,160,.4); background: rgba(61,232,160,.07); color: var(--green); font-family: var(--mono); font-size: 11px; cursor: pointer; transition: all .15s; }
+  .sim-merge-btn:hover { background: rgba(61,232,160,.15); }
+  .sim-diff-btn  { padding: 7px 14px; border-radius: 7px; border: 1px solid var(--border); background: transparent; color: var(--muted2); font-family: var(--mono); font-size: 11px; cursor: pointer; transition: all .15s; }
+  .sim-diff-btn:hover  { border-color: var(--muted2); color: var(--text); }
+
+  .spk-main-grid { display: grid; grid-template-columns: 360px 1fr; gap: 24px; }
+  .spk-card { background: var(--s1); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+  .spk-card-head { padding: 14px 18px; border-bottom: 1px solid var(--border); font-size: 9px; text-transform: uppercase; letter-spacing: .15em; color: var(--muted2); }
+  .spk-list-wrap { display: flex; flex-direction: column; }
+  .spk-row { display: flex; align-items: center; gap: 10px; padding: 12px 18px; border-bottom: 1px solid rgba(255,255,255,.03); }
+  .spk-row:last-child { border-bottom: none; }
+  .spk-row-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+  .spk-row-name { flex: 1; font-size: 13px; color: var(--text); }
+  .spk-owner-tag { font-size: 9px; padding: 2px 7px; border-radius: 10px; background: rgba(247,108,108,.12); color: var(--danger); border: 1px solid rgba(247,108,108,.3); }
+  .spk-meta-tag { font-size: 10px; color: var(--muted2); }
+  .spk-actions { display: flex; gap: 6px; }
+  .spk-btn { padding: 4px 10px; border-radius: 5px; border: 1px solid var(--border); background: transparent; color: var(--muted2); font-family: var(--mono); font-size: 10px; cursor: pointer; transition: all .15s; }
+  .spk-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .spk-btn.del:hover { border-color: var(--danger); color: var(--danger); }
+  .inline-edit { background: var(--border); border: 1px solid rgba(255,255,255,.06); color: var(--text); font-family: var(--sans); font-size: 12px; padding: 4px 8px; border-radius: 5px; outline: none; width: 120px; }
+  .inline-edit:focus { border-color: var(--accent); }
+
+  .spk-enroll { padding: 18px; }
+  .spk-enroll-title { font-size: 12px; color: var(--text); margin-bottom: 6px; }
+  .spk-enroll-sub { font-size: 11px; color: var(--muted2); line-height: 1.6; margin-bottom: 16px; }
+  .spk-enroll-code { background: var(--s2); border: 1px solid var(--border); border-radius: 7px; padding: 10px 14px; font-family: var(--mono); font-size: 12px; color: var(--green); }
+  .enroll-owner-row { display:flex; align-items:center; gap:10px; margin-bottom:16px; }
+  .enroll-owner-dot { width:10px; height:10px; border-radius:50%; background:var(--accent); flex-shrink:0; }
+  .enroll-owner-name { font-size:13px; color:var(--text); font-weight:600; }
+  .enroll-samples-badge { background:var(--s2); border:1px solid var(--border); border-radius:10px; padding:2px 8px; font-size:10px; color:var(--muted2); }
+  .enroll-name-row { display:flex; gap:8px; margin-bottom:14px; }
+  .enroll-name-input { flex:1; background:var(--s2); border:1px solid var(--border); color:var(--text); font-family:var(--sans); font-size:12px; padding:6px 10px; border-radius:6px; outline:none; }
+  .enroll-name-input:focus { border-color:var(--accent); }
+  .enroll-record-btn { background:var(--accent); color:#fff; border:none; border-radius:6px; padding:7px 14px; font-size:12px; cursor:pointer; white-space:nowrap; }
+  .enroll-record-btn:disabled { opacity:.45; cursor:default; }
+  .enroll-cancel-btn { background:transparent; border:1px solid var(--border); color:var(--muted2); border-radius:6px; padding:7px 10px; font-size:12px; cursor:pointer; }
+  .enroll-progress-wrap { margin-bottom:10px; }
+  .enroll-bar-track { height:6px; background:var(--s2); border-radius:3px; overflow:hidden; margin-bottom:6px; }
+  .enroll-bar-fill { height:100%; background:var(--accent); border-radius:3px; transition:width .2s linear; width:0%; }
+  .enroll-msg { font-size:11px; color:var(--muted2); min-height:16px; }
+  .enroll-msg.ok { color:var(--green); }
+  .enroll-msg.err { color:#f76c6c; }
+
+  /* ── Transcripts tab ── */
+  #tab-transcripts { background: var(--bg); overflow: hidden; }
+  .tx-layout { display: grid; grid-template-columns: 280px 1fr; height: 100%; overflow: hidden; }
+  .tx-sidebar { border-right: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden; }
+  .tx-sidebar-head { padding: 14px 16px; border-bottom: 1px solid var(--border); font-size: 9px; text-transform: uppercase; letter-spacing: .15em; color: var(--muted2); display: flex; justify-content: space-between; align-items: center; flex-shrink: 0; }
+  .tx-list { flex: 1; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+  .tx-item { padding: 12px 16px; border-bottom: 1px solid rgba(255,255,255,.03); cursor: pointer; transition: background .1s; }
+  .tx-item:hover { background: rgba(124,106,247,.06); }
+  .tx-item.active { background: rgba(124,106,247,.12); border-left: 2px solid var(--accent); padding-left: 14px; }
+  .tx-item-name { font-size: 11px; color: var(--text); margin-bottom: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tx-item-meta { display: flex; gap: 8px; font-size: 10px; color: var(--muted2); }
+  /* agenda view */
+  .agenda-date-sep { padding: 8px 16px 7px; font-size: 9px; color: var(--muted); text-transform: uppercase; letter-spacing: .1em; border-bottom: 1px solid var(--border); background: var(--s1); position: sticky; top: 0; z-index: 1; cursor: pointer; display: flex; align-items: center; justify-content: space-between; user-select: none; }
+  .agenda-date-sep:hover { background: rgba(124,106,247,.07); color: var(--text); }
+  .agenda-date-right { display: flex; align-items: center; gap: 8px; }
+  .agenda-date-count { background: var(--border); padding: 1px 6px; border-radius: 8px; font-size: 9px; color: var(--muted2); }
+  .agenda-date-chevron { font-size: 9px; color: var(--muted2); transition: transform .15s; display: inline-block; }
+  .agenda-date-sep.collapsed .agenda-date-chevron { transform: rotate(-90deg); }
+  .agenda-items-wrap.hidden { display: none; }
+  .agenda-item { display: flex; gap: 12px; padding: 11px 16px; border-bottom: 1px solid rgba(255,255,255,.03); cursor: pointer; transition: background .1s; align-items: flex-start; }
+  .agenda-item:hover { background: rgba(124,106,247,.06); }
+  .agenda-item.active { background: rgba(124,106,247,.12); border-left: 2px solid var(--accent); padding-left: 14px; }
+  .agenda-item-empty { opacity: .35; cursor: default; pointer-events: none; }
+  .agenda-time { font-size: 10px; color: var(--muted); min-width: 36px; padding-top: 2px; flex-shrink: 0; font-variant-numeric: tabular-nums; }
+  .agenda-body { flex: 1; min-width: 0; }
+  .agenda-name { font-size: 12px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 3px; }
+  .agenda-meta { font-size: 10px; color: var(--green); }
+  .agenda-meta-empty { color: var(--muted2) !important; }
+  .tx-badge { background: var(--border); padding: 1px 6px; border-radius: 4px; }
+  .tx-main { display: flex; flex-direction: column; overflow: hidden; }
+  .tx-toolbar { padding: 12px 20px; border-bottom: 1px solid var(--border); background: var(--s1); display: flex; align-items: center; gap: 10px; flex-shrink: 0; font-size: 11px; color: var(--muted2); }
+  .tx-toolbar strong { color: var(--text); }
+  .tx-viewer { flex: 1; overflow-y: auto; padding: 28px 36px; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+  .tx-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; gap: 12px; color: var(--muted2); }
+  .tx-empty-icon { font-size: 40px; opacity: .3; }
+  /* Speaker highlight in transcript viewer */
+  .spk-hl-header { background: rgba(124,106,247,.15); border-left: 2px solid var(--accent); padding: 2px 8px 2px 6px !important; border-radius: 0 4px 4px 0; margin: 8px 0 2px !important; }
+  .spk-hl-text   { background: rgba(124,106,247,.07); border-left: 2px solid rgba(124,106,247,.25); padding: 1px 8px 1px 6px !important; }
+  .tx-hl-badge   { display: inline-flex; align-items: center; gap: 5px; background: rgba(124,106,247,.15); border: 1px solid rgba(124,106,247,.35); color: var(--accent); padding: 2px 9px; border-radius: 10px; font-size: 9px; cursor: pointer; flex-shrink: 0; }
+  .tx-hl-badge:hover { background: rgba(124,106,247,.28); }
+
+  /* Markdown */
+  .md-body h1 { font-size: 18px; font-weight: 400; color: var(--text); margin-bottom: 20px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
+  .md-body h2 { font-family: var(--mono); font-size: 9px; text-transform: uppercase; letter-spacing: .15em; color: var(--accent); margin: 24px 0 10px; }
+  .md-body p  { font-size: 13px; line-height: 1.75; color: var(--text); margin-bottom: 10px; font-family: var(--sans); }
+  .md-body li { font-size: 13px; line-height: 1.7; color: var(--text); list-style: none; padding: 3px 0; font-family: var(--sans); }
+  .md-body li::before { content: '—'; color: var(--muted); margin-right: 10px; font-family: var(--mono); }
+  .md-body strong { color: var(--green); font-weight: 500; }
+  .md-body em { color: var(--muted2); font-style: normal; }
+
+  /* ── Label banner ── */
+  #label-banner { position: fixed; bottom: 20px; right: 20px; width: 360px; background: var(--s1); border: 1px solid var(--accent); border-radius: 12px; padding: 18px 20px; z-index: 100; display: none; box-shadow: 0 8px 40px rgba(0,0,0,.6); animation: slideUp .3s ease; }
+  @keyframes slideUp { from{opacity:0;transform:translateY(12px)} to{opacity:1;transform:translateY(0)} }
+  .lb-title   { font-size: 10px; text-transform: uppercase; letter-spacing: .12em; color: var(--accent); margin-bottom: 10px; display: flex; justify-content: space-between; }
+  .lb-speaker { font-size: 15px; color: var(--text); font-weight: 500; margin-bottom: 6px; }
+  .lb-sample  { font-size: 11px; color: var(--muted2); border-left: 2px solid var(--accent); padding-left: 10px; margin-bottom: 14px; line-height: 1.6; font-style: italic; }
+  .lb-audio   { margin-bottom: 12px; }
+  .lb-audio audio { width: 100%; height: 28px; outline: none; }
+  .lb-row { display: flex; gap: 8px; }
+  .lb-input { flex: 1; background: var(--border); border: 1px solid rgba(124,106,247,.3); color: var(--text); font-family: var(--mono); font-size: 12px; padding: 8px 12px; border-radius: 7px; outline: none; }
+  .lb-input:focus { border-color: var(--accent); }
+  .lb-counter { font-family: var(--mono); font-size: 10px; color: var(--muted2); margin-top: 8px; text-align: right; }
+
+  /* Calendar card */
+  .cal-card { background: rgba(61,232,160,.07); border: 1px solid rgba(61,232,160,.2); border-radius: 8px; padding: 14px; }
+  .cal-subject { font-size: 13px; color: var(--green); margin-bottom: 8px; font-weight: 500; font-family: var(--sans); }
+  .cal-detail  { font-size: 10px; color: var(--muted2); line-height: 1.8; }
+  .meeting-picker { display: flex; flex-direction: column; gap: 7px; }
+  .meeting-pick-card { border-radius: 8px; padding: 11px 13px; cursor: pointer; transition: all .15s; border: 1px solid var(--border); position: relative; }
+  .meeting-pick-card:hover { border-color: rgba(124,106,247,.4); background: rgba(124,106,247,.06); }
+  .meeting-pick-card.selected { border-color: var(--green); background: rgba(61,232,160,.08); }
+  .meeting-pick-subject { font-size: 12px; color: var(--text); font-weight: 500; margin-bottom: 4px; padding-right: 48px; }
+  .meeting-pick-card.selected .meeting-pick-subject { color: var(--green); }
+  .meeting-pick-time { font-size: 10px; color: var(--muted2); line-height: 1.6; }
+  .meeting-pick-badge { position: absolute; top: 9px; right: 10px; font-size: 9px; padding: 2px 7px; border-radius: 10px; background: rgba(61,232,160,.15); color: var(--green); }
+  .meeting-warn { font-size: 10px; color: var(--warn); margin-bottom: 10px; display: flex; align-items: center; gap: 6px; }
+  .meeting-clear { margin-top: 6px; font-size: 10px; color: var(--muted2); cursor: pointer; text-align: right; }
+  .meeting-clear:hover { color: var(--text); }
+
+  /* Section label in pending */
+  .section-danger-label { font-size: 9px; text-transform: uppercase; letter-spacing: .15em; color: var(--danger); margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
+  .section-danger-label span { background: rgba(247,108,108,.15); color: var(--danger); padding: 1px 8px; border-radius: 8px; }
+  .section-empty { font-size: 11px; color: var(--muted2); padding: 16px 0; }
+
+  /* Inline speaker rename */
+  .spk-inline-btn { cursor: pointer; border-bottom: 1px dashed rgba(124,106,247,.5); color: var(--accent); transition: color .12s; }
+  .spk-inline-btn:hover { color: #a99cf9; border-bottom-color: var(--accent); }
+  #spk-rename-pop { position: fixed; z-index: 300; background: var(--s1); border: 1px solid rgba(124,106,247,.4); border-radius: 10px; padding: 14px 16px; width: 260px; box-shadow: 0 8px 32px rgba(0,0,0,.6); animation: slideUp .15s ease; }
+  #spk-rename-pop .pop-title { font-size: 9px; text-transform: uppercase; letter-spacing: .12em; color: var(--accent); margin-bottom: 10px; }
+  #spk-rename-pop .pop-row { display: flex; gap: 6px; margin-top: 8px; }
+  #spk-rename-pop input { flex:1; background: var(--border); border: 1px solid rgba(124,106,247,.3); color: var(--text); font-family: var(--mono); font-size: 12px; padding: 7px 10px; border-radius: 6px; outline: none; }
+  #spk-rename-pop input:focus { border-color: var(--accent); }
+  #spk-rename-pop .pop-close { position: absolute; top: 10px; right: 12px; cursor: pointer; color: var(--muted2); font-size: 14px; line-height: 1; }
+  #spk-rename-pop .pop-close:hover { color: var(--text); }
+  #spk-rename-pop .pop-hint { font-size: 10px; color: var(--muted2); margin-top: 6px; }
+  .pop-participants-label { font-size: 9px; text-transform: uppercase; letter-spacing: .1em; color: var(--muted2); margin-bottom: 5px; }
+  .pop-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+  .pop-chip { padding: 3px 9px; border-radius: 20px; border: 1px solid var(--border); background: var(--s2); color: var(--text); font-size: 11px; cursor: pointer; transition: all .12s; white-space: nowrap; }
+  .pop-chip:hover { border-color: var(--accent); color: var(--accent); background: rgba(124,106,247,.1); }
+
+  /* Diagnostics card */
+  .diag-rows { display: flex; flex-direction: column; gap: 0; }
+  .diag-row { display: flex; align-items: flex-start; gap: 10px; padding: 7px 0; border-bottom: 1px solid rgba(255,255,255,.04); }
+  .diag-row:last-child { border-bottom: none; }
+  .diag-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; margin-top: 3px; }
+  .diag-dot.ok      { background: var(--green); box-shadow: 0 0 4px rgba(61,232,160,.4); }
+  .diag-dot.warn    { background: var(--warn);  box-shadow: 0 0 4px rgba(252,196,80,.4); }
+  .diag-dot.error   { background: var(--danger);box-shadow: 0 0 4px rgba(247,108,108,.4); }
+  .diag-dot.unknown { background: var(--muted); }
+  .diag-name   { font-size: 11px; color: var(--text); width: 110px; flex-shrink: 0; }
+  .diag-detail { font-size: 10px; color: var(--muted2); line-height: 1.5; }
+  .diag-ts     { font-size: 9px; color: var(--muted); margin-top: 10px; text-align: right; }
+  .diag-empty  { font-size: 11px; color: var(--muted2); padding: 10px 0; }
+  .diag-refresh-btn { font-size: 10px; padding: 2px 10px; }
+  .diag-spinner { display: inline-block; width: 10px; height: 10px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<!-- Header -->
+<header>
+  <div class="logo">Voice<span>/</span>Logger</div>
+  <div class="hdr-tabs">
+    <div class="hdr-tab active" id="tab-monitor-btn" onclick="switchTab('monitor',this)">Мониторинг</div>
+    <div class="hdr-tab" id="tab-speakers-btn" onclick="switchTab('speakers',this)">
+      Спикеры
+      <span class="hdr-badge-cnt" id="pending-count-badge" style="display:none">0</span>
+    </div>
+    <div class="hdr-tab" id="tab-transcripts-btn" onclick="switchTab('transcripts',this)">Транскрипты</div>
+  </div>
+  <div class="hdr-right" id="hdr-right">
+    <div class="hdr-status-badge" id="hdr-badge">● idle</div>
+  </div>
+</header>
+
+<!-- ── Timeline strip ── -->
+<div id="timeline-strip">
+  <div class="tl-strip-head">
+    <span class="tl-strip-title">Покрытие за сегодня</span>
+    <div style="display:flex;align-items:center;gap:20px">
+      <span id="day-cov-range" style="font-size:9px;color:var(--muted2)">—</span>
+      <div class="tl-legend">
+        <div class="tl-leg-item"><div class="tl-leg-dot" style="background:var(--s2);border:1px solid var(--muted)"></div>не записывалось</div>
+        <div class="tl-leg-item"><div class="tl-leg-dot" style="background:var(--green)"></div>транскрибировано</div>
+        <div class="tl-leg-item"><div class="tl-leg-dot" style="background:#6a5acd"></div>в обработке</div>
+        <div class="tl-leg-item"><div class="tl-leg-dot" style="background:var(--muted);opacity:.5"></div>ждёт обработки</div>
+        <div class="tl-leg-item"><div class="tl-leg-dot" style="background:var(--warn)"></div>идёт запись</div>
+      </div>
+    </div>
+  </div>
+  <div id="tl-axis" class="tl-axis"></div>
+  <div id="tl-track" class="tl-track"></div>
+  <div id="tl-labels" class="tl-labels"></div>
+</div>
+
+<!-- ── Speakers tab ── -->
+<div id="tab-speakers" style="display:none;grid-column:1/-1;grid-row:3">
+  <div class="spk-tab-layout">
+    <div class="spk-tab-title">Спикеры</div>
+    <div class="spk-tab-sub">Голосовые профили для диаризации — кто что говорил</div>
+
+    <!-- Similar pairs -->
+    <div id="sim-section" class="sim-section" style="display:none">
+      <div class="sim-section-head">
+        Похожие спикеры — возможно один человек
+        <span class="sim-count-badge" id="sim-count-badge">0</span>
+      </div>
+      <div class="sim-grid" id="sim-grid"></div>
+    </div>
+
+    <!-- Pending labels -->
+    <div id="pending-section" style="margin-bottom:28px">
+      <div class="section-danger-label">
+        Требуют имени
+        <span id="pending-count-lbl">0</span>
+      </div>
+      <div id="pending-grid" class="pending-grid"></div>
+    </div>
+
+    <div class="spk-main-grid">
+      <div class="spk-card">
+        <div class="spk-card-head" id="spk-reg-head">Зарегистрированные спикеры · 0</div>
+        <div class="spk-list-wrap" id="spk-list"></div>
+      </div>
+
+      <div class="spk-card">
+        <div class="spk-card-head">Мой голосовой профиль ★</div>
+        <div class="spk-enroll">
+          <div id="enroll-owner-row" class="enroll-owner-row" style="display:none">
+            <div class="enroll-owner-dot"></div>
+            <span class="enroll-owner-name" id="enroll-owner-name"></span>
+            <span class="enroll-samples-badge"><span id="enroll-samples-count">0</span> образцов</span>
+          </div>
+          <div class="spk-enroll-sub">
+            Говорите в обычном темпе 20 секунд — система запишет ваш голосовой вектор
+            и будет отмечать ваши реплики звёздочкой ★. Чем больше образцов — тем точнее распознавание.
+          </div>
+          <div class="enroll-name-row">
+            <input id="enroll-name-input" class="enroll-name-input" placeholder="Ваше имя" />
+            <button id="enroll-record-btn" class="enroll-record-btn" onclick="enrollStart()">
+              &#9210; Записать 20 сек
+            </button>
+            <button id="enroll-cancel-btn" class="enroll-cancel-btn" onclick="enrollCancel()" style="display:none">
+              Отмена
+            </button>
+          </div>
+          <div id="enroll-progress-wrap" class="enroll-progress-wrap" style="display:none">
+            <div class="enroll-bar-track"><div id="enroll-bar-fill" class="enroll-bar-fill"></div></div>
+            <div class="enroll-msg" id="enroll-countdown"></div>
+          </div>
+          <div class="enroll-msg" id="enroll-msg"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Transcripts tab ── -->
+<div id="tab-transcripts" style="display:none;grid-column:1/-1;grid-row:3">
+  <div class="tx-layout">
+    <div class="tx-sidebar">
+      <div class="tx-sidebar-head">
+        Встречи
+        <span id="tx-count" style="background:var(--border);padding:2px 8px;border-radius:10px;font-size:10px;color:var(--text)">0</span>
+      </div>
+      <div class="tx-list" id="tx-list">
+        <div style="padding:20px;text-align:center;color:var(--muted2);font-size:11px">Загрузка…</div>
+      </div>
+    </div>
+    <div class="tx-main">
+      <div class="tx-toolbar" id="tx-toolbar">
+        <span>Выберите транскрипт</span>
+      </div>
+      <div class="tx-viewer" id="tx-viewer">
+        <div class="tx-empty">
+          <div class="tx-empty-icon">🎙</div>
+          <span>Транскрипты появятся здесь</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Monitor tab ── -->
+<div id="tab-monitor" style="display:contents">
+
+<!-- LEFT col -->
+<div class="col" style="grid-area:left">
+
+  <!-- Config -->
+  <div class="card" id="card-config">
+    <div class="card-head" onclick="toggleCard('card-config')">
+      Конфигурация
+      <div style="display:flex;align-items:center;gap:8px">
+        <button class="btn" style="padding:3px 10px;font-size:9px" onclick="event.stopPropagation();openConfigEdit()" id="cfg-edit-btn">Изменить</button>
+        <span class="card-arrow">▾</span>
+      </div>
+    </div>
+    <div class="card-content">
+      <div class="cfg-grid">
+        <div class="cfg-item"><div class="cfg-key">Модель</div><div class="cfg-val accent" id="cfg-d-model">—</div></div>
+        <div class="cfg-item"><div class="cfg-key">Устройство</div><div class="cfg-val warn" id="cfg-d-device">—</div></div>
+        <div class="cfg-item"><div class="cfg-key">Язык</div><div class="cfg-val" id="cfg-d-lang">—</div></div>
+        <div class="cfg-item"><div class="cfg-key">Чанк</div><div class="cfg-val" id="cfg-d-chunk">—</div></div>
+        <div class="cfg-item"><div class="cfg-key">Порог тишины</div><div class="cfg-val" id="cfg-d-thresh">—</div></div>
+        <div class="cfg-item"><div class="cfg-key">CPU потоки</div><div class="cfg-val" id="cfg-d-cpu">—</div></div>
+      </div>
+      <div class="loopback-row">
+        <div>
+          <div class="loopback-row-text">Запись системного звука</div>
+          <div class="loopback-row-sub" id="loopback-sub">Захват аудио из Zoom/Meet напрямую</div>
+        </div>
+        <div id="loopback-dot" style="width:8px;height:8px;border-radius:50%;background:var(--muted);flex-shrink:0"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- System load -->
+  <div class="card" id="card-sysload">
+    <div class="card-head" onclick="toggleCard('card-sysload')">
+      Загрузка системы
+      <span class="card-arrow">▾</span>
+    </div>
+    <div class="card-content">
+      <div class="gauge-grid">
+        <div class="gauge">
+          <div class="gauge-label">CPU</div>
+          <div class="gauge-val warn" id="g-cpu">—</div>
+          <div class="gauge-sub" id="g-cpu-sub">—</div>
+          <div class="mini-bar"><div class="mini-bar-fill" id="g-cpu-bar" style="width:0%;background:var(--warn)"></div></div>
+        </div>
+        <div class="gauge">
+          <div class="gauge-label">RAM</div>
+          <div class="gauge-val green" id="g-ram">—</div>
+          <div class="gauge-sub" id="g-ram-sub">—</div>
+          <div class="mini-bar"><div class="mini-bar-fill" id="g-ram-bar" style="width:0%;background:var(--green)"></div></div>
+        </div>
+        <div class="gauge">
+          <div class="gauge-label">Скорость транскрипции</div>
+          <div class="gauge-val accent" id="g-transc">—</div>
+          <div class="gauge-sub" id="g-transc-sub">последние 10 чанков</div>
+          <div class="mini-bar"><div class="mini-bar-fill" id="g-transc-bar" style="width:0%"></div></div>
+        </div>
+        <div class="gauge">
+          <div class="gauge-label">Ср. диаризация</div>
+          <div class="gauge-val green" id="g-diariz">—</div>
+          <div class="gauge-sub">на чанк 5 мин</div>
+          <div class="mini-bar"><div class="mini-bar-fill" id="g-diariz-bar" style="width:0%;background:var(--green)"></div></div>
+        </div>
+        <div class="gauge" id="gpu-gauge" style="display:none">
+          <div class="gauge-label">GPU</div>
+          <div class="gauge-val danger" id="g-gpu">—</div>
+          <div class="gauge-sub" id="g-gpu-sub">—</div>
+          <div class="mini-bar"><div class="mini-bar-fill" id="g-gpu-bar" style="width:0%;background:var(--danger)"></div></div>
+        </div>
+        <div class="gauge" id="vram-gauge" style="display:none">
+          <div class="gauge-label">VRAM</div>
+          <div class="gauge-val warn" id="g-vram">—</div>
+          <div class="gauge-sub" id="g-vram-sub">—</div>
+          <div class="mini-bar"><div class="mini-bar-fill" id="g-vram-bar" style="width:0%;background:var(--warn)"></div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Resource limits -->
+  <div class="card" id="card-resources">
+    <div class="card-head" onclick="toggleCard('card-resources')">
+      Ограничения ресурсов
+      <span class="card-arrow">▾</span>
+    </div>
+    <div class="card-content">
+      <div class="res-sliders">
+        <div class="res-row">
+          <div class="res-row-top">
+            <div><div class="res-name">CPU — потоки</div><div class="res-sub">больше = быстрее, но нагружает систему</div></div>
+            <div class="res-val" id="res-cpu-val" style="color:var(--warn)">4</div>
+          </div>
+          <input type="range" class="cpu-range" min="1" max="16" value="4" id="res-cpu" oninput="document.getElementById('res-cpu-val').textContent=this.value">
+        </div>
+        <div class="res-row">
+          <div class="res-row-top">
+            <div><div class="res-name">RAM — лимит</div><div class="res-sub">максимум использования оперативной памяти</div></div>
+            <div class="res-val" id="res-ram-val" style="color:var(--green)">8 GB</div>
+          </div>
+          <input type="range" class="ram-range" min="1" max="64" step="1" value="8" id="res-ram" oninput="this._userSet=true;document.getElementById('res-ram-val').textContent=this.value+' GB'">
+        </div>
+        <div class="res-row">
+          <div class="res-row-top">
+            <div><div class="res-name">GPU — доля VRAM</div><div class="res-sub">меньше = оставить GPU для других задач</div></div>
+            <div class="res-val" id="res-gpu-val" style="color:var(--danger)">50%</div>
+          </div>
+          <input type="range" class="gpu-range" min="10" max="100" step="5" value="50" id="res-gpu" oninput="document.getElementById('res-gpu-val').textContent=this.value+'%'">
+        </div>
+        <div class="res-row">
+          <div class="res-row-top">
+            <div><div class="res-name">Параллельных чанков</div><div class="res-sub">1 = не перегружать; больше = быстрее очередь</div></div>
+            <div class="res-val" id="res-par-val" style="color:var(--accent)">1</div>
+          </div>
+          <input type="range" class="par-range" min="1" max="4" step="1" value="1" id="res-par" oninput="document.getElementById('res-par-val').textContent=this.value">
+        </div>
+      </div>
+      <button class="res-apply" onclick="saveResources()">Применить ограничения</button>
+    </div>
+  </div>
+
+  <!-- Diagnostics -->
+  <div class="card" id="card-diag">
+    <div class="card-head" onclick="toggleCard('card-diag')">
+      Диагностика
+      <div style="display:flex;align-items:center;gap:8px">
+        <button class="btn diag-refresh-btn" onclick="event.stopPropagation();fetchDiagnostics()" id="diag-btn">Проверить</button>
+        <span class="card-arrow">▾</span>
+      </div>
+    </div>
+    <div class="card-content">
+      <div id="diag-body">
+        <div class="diag-empty">Нажмите «Проверить» для диагностики всех систем</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Error log -->
+  <div class="card" id="card-errors">
+    <div class="card-head" onclick="toggleCard('card-errors')">
+      Журнал ошибок
+      <span id="err-count-badge" style="background:rgba(247,108,108,.15);color:var(--danger);padding:2px 8px;border-radius:8px;font-size:10px;display:none">0 ошибок</span>
+      <span class="card-arrow">▾</span>
+    </div>
+    <div class="card-content">
+      <div class="err-scroll">
+        <div id="sys-err-section" style="display:none">
+          <div class="err-section-hdr">⊞ Windows / Система</div>
+          <div class="err-list" id="sys-err-list"></div>
+        </div>
+        <div id="pipe-err-section">
+          <div class="err-section-hdr" id="pipe-err-hdr" style="display:none">⚙ Конвейер</div>
+          <div class="err-list" id="err-list">
+            <div class="err-empty">Ошибок нет</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /col left -->
+
+<!-- MID col -->
+<div class="col" style="grid-area:mid">
+
+  <!-- Status card -->
+  <div class="card" id="card-status">
+    <div class="card-head">
+      Состояние процесса
+      <span style="color:var(--muted2);font-size:9px" id="status-updated">—</span>
+    </div>
+    <div class="card-content" style="overflow:visible;padding:0">
+      <!-- Service OFF -->
+      <div id="status-off-row" class="status-off-row">
+        <div class="sr-dot-wrap"><div class="sr-dot" style="background:var(--muted2)"></div></div>
+        <div class="sr-content">
+          <div class="sr-label">Состояние</div>
+          <div class="sr-status">Сервис не запущен</div>
+        </div>
+        <button class="state-btn primary" onclick="startRecorder()">▶ Запустить</button>
+      </div>
+      <!-- Service ON: two rows -->
+      <div id="status-rows" style="display:none">
+        <div class="status-row">
+          <div class="sr-row-top">
+            <div class="sr-dot-wrap"><div class="sr-dot" id="sr-rec-dot"></div></div>
+            <div class="sr-content">
+              <div class="sr-label">Запись</div>
+              <div class="sr-status" id="sr-rec-status">—</div>
+            </div>
+            <button class="sr-btn" id="sr-rec-btn" onclick="toggleRecording()"></button>
+          </div>
+          <div class="sr-progress" id="sr-rec-progress">
+            <div class="sr-progress-track">
+              <div class="sr-progress-fill rec" id="sr-rec-fill" style="width:0%"></div>
+            </div>
+            <div class="sr-progress-info" id="sr-rec-info"></div>
+          </div>
+        </div>
+        <div class="status-row">
+          <div class="sr-row-top">
+            <div class="sr-dot-wrap"><div class="sr-dot" id="sr-proc-dot"></div></div>
+            <div class="sr-content">
+              <div class="sr-label">Обработка</div>
+              <div class="sr-status" id="sr-proc-status">—</div>
+            </div>
+            <button class="sr-btn" id="sr-proc-btn" onclick="toggleProcessing()"></button>
+          </div>
+          <div class="sr-progress" id="sr-proc-progress">
+            <div class="sr-progress-track">
+              <div class="sr-progress-fill proc" id="sr-proc-fill" style="width:0%"></div>
+            </div>
+            <div class="sr-progress-info" id="sr-proc-info"></div>
+          </div>
+        </div>
+      </div>
+      <div class="state-controls" id="state-controls" style="padding:0 20px 16px"></div>
+    </div>
+  </div>
+
+  <!-- Activity log -->
+  <div class="card" style="flex:1" id="card-activity">
+    <div class="card-head" onclick="toggleCard('card-activity')">
+      Лог событий
+      <span style="color:var(--green);font-size:9px">● live</span>
+    </div>
+    <div class="card-content" style="padding:0">
+      <div class="activity-log" id="activity-log">
+        <div class="log-empty">Ожидание данных…</div>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /col mid -->
+
+<!-- RIGHT col -->
+<div class="col" style="grid-area:right">
+
+  <!-- Current meeting -->
+  <div class="card" id="card-meeting">
+    <div class="card-head" onclick="toggleCard('card-meeting')">
+      Текущая встреча
+      <span class="card-arrow">▾</span>
+    </div>
+    <div class="card-content">
+      <div id="cal-content" style="color:var(--muted2);font-size:11px">Нет активных событий</div>
+    </div>
+  </div>
+
+  <!-- Settings (compact) -->
+  <div class="card" id="card-settings">
+    <div class="card-head" onclick="toggleCard('card-settings')">
+      Настройки
+      <span class="card-arrow">▾</span>
+    </div>
+    <div class="card-content" style="padding:14px 16px">
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <div style="font-size:11px;color:var(--text)">Модель Whisper</div>
+          <select id="cfg-model" style="background:var(--s2);border:1px solid var(--border);color:var(--text);font-family:var(--mono);font-size:11px;padding:4px 8px;border-radius:6px;outline:none">
+            <option>tiny</option><option>base</option><option>small</option><option>medium</option><option selected>large</option>
+          </select>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <div style="font-size:11px;color:var(--text)">Устройство</div>
+          <select id="cfg-device" style="background:var(--s2);border:1px solid var(--border);color:var(--text);font-family:var(--mono);font-size:11px;padding:4px 8px;border-radius:6px;outline:none">
+            <option value="auto">auto</option><option value="cpu">CPU</option><option value="cuda">GPU (CUDA)</option>
+          </select>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <div style="font-size:11px;color:var(--text)">Язык</div>
+          <select id="cfg-lang" style="background:var(--s2);border:1px solid var(--border);color:var(--text);font-family:var(--mono);font-size:11px;padding:4px 8px;border-radius:6px;outline:none">
+            <option value="">auto</option><option value="ru">ru</option><option value="en">en</option><option value="ka">ka</option>
+          </select>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <div style="font-size:11px;color:var(--text)">Чанк (сек)</div>
+          <input type="number" id="cfg-chunk" value="300" min="30" max="1800" style="background:var(--s2);border:1px solid var(--border);color:var(--text);font-family:var(--mono);font-size:11px;padding:4px 8px;border-radius:6px;outline:none;width:80px;text-align:right">
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <div>
+            <div style="font-size:11px;color:var(--text)">Хранить аудио</div>
+          </div>
+          <button class="toggle" id="cfg-keep" onclick="toggleKeep(this)"></button>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <div style="font-size:11px;color:var(--text)">Диаризация</div>
+          <button class="toggle" id="cfg-diariz" onclick="toggleDiariz(this)"></button>
+        </div>
+        <div>
+          <div style="font-size:11px;color:var(--text);margin-bottom:6px">Google Drive ID</div>
+          <input type="text" id="cfg-gdrive" placeholder="1BxiM…" style="width:100%;background:var(--s2);border:1px solid var(--border);color:var(--text);font-family:var(--mono);font-size:11px;padding:6px 10px;border-radius:6px;outline:none">
+        </div>
+        <button class="btn primary" onclick="saveConfig()" style="width:100%;margin-top:2px">Сохранить настройки</button>
+        <div id="cfg-saved-msg" style="font-family:var(--mono);font-size:10px;color:var(--green);text-align:center;opacity:0;transition:opacity .5s">
+          Сохранено. Перезапустите запись чтобы применить.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Recent sessions -->
+  <div class="card" id="card-sessions" style="flex:1">
+    <div class="card-head" onclick="toggleCard('card-sessions')">
+      Последние сессии
+      <span id="sessions-count-badge" style="background:var(--border);padding:2px 8px;border-radius:8px;font-size:10px;color:var(--text)">0</span>
+    </div>
+    <div class="card-content" style="padding:0">
+      <div class="session-list" id="sessions-list">
+        <div style="padding:20px;text-align:center;font-size:11px;color:var(--muted2)">Загрузка…</div>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /col right -->
+</div><!-- /tab-monitor -->
+
+<!-- Label banner -->
+<div id="label-banner">
+  <div class="lb-title">
+    <span>🎙 Новый спикер</span>
+    <span id="lb-counter" style="color:var(--muted2)"></span>
+  </div>
+  <div class="lb-speaker" id="lb-speaker-name">Speaker_1</div>
+  <div class="lb-sample" id="lb-sample-text">…</div>
+  <div class="lb-audio" id="lb-audio-wrap" style="display:none">
+    <audio id="lb-audio" controls src=""></audio>
+  </div>
+  <div id="lb-speaker-chips" style="display:none;margin:6px 0 8px"></div>
+  <div class="lb-row">
+    <input class="lb-input" type="text" id="lb-name-input" placeholder="Введите имя…"
+      onkeydown="if(event.key==='Enter')submitLabel()"
+      oninput="_bannerTargetId=null">
+    <button class="btn primary" onclick="submitLabel()">OK</button>
+    <button class="btn" onclick="dismissLabel()" title="Пропустить">—</button>
+  </div>
+  <div class="lb-counter" id="lb-more"></div>
+</div>
+
+<!-- Inline speaker rename popover -->
+<div id="spk-rename-pop" style="display:none">
+  <span class="pop-close" onclick="spkPopClose()">✕</span>
+  <div class="pop-title">Переименовать спикера</div>
+  <input id="spk-rename-input" type="text" placeholder="Имя спикера…"
+    onkeydown="if(event.key==='Enter')spkPopCommit();if(event.key==='Escape')spkPopClose()">
+  <div id="spk-rename-participants" style="display:none;margin-top:8px"></div>
+  <div class="pop-row" style="margin-top:10px">
+    <button class="btn primary" style="flex:1;padding:6px;font-size:11px" onclick="spkPopCommit('block')" title="Изменить только этот фрагмент">Этот фрагмент</button>
+    <button class="btn" style="flex:1;padding:6px;font-size:11px" onclick="spkPopCommit('all')" title="Переименовать спикера во всех транскриптах">Везде</button>
+  </div>
+  <div class="pop-hint" id="spk-rename-hint" style="margin-top:6px;font-size:10px;color:var(--muted2)">Этот фрагмент — только в этом файле · Везде — переименовать спикера</div>
+</div>
+
+<script>
+const API = 'http://127.0.0.1:7331/api';
+let _recRunning   = false;
+let _chunkStart   = null;
+let _chunkSeconds = 300;
+let _cfgKeep      = false;
+let _cfgDiariz    = true;
+let _curState     = 'off';
+let _allTx        = [];
+let _activeMeetings = [];
+let _forcedMeeting  = null;
+let _pendingLabels  = [];
+let _curLabelIdx    = 0;
+let _bannerTargetId = null;
+let _actLog         = [];  // activity log entries
+let _lastLoggedTx   = null; // last transcript path pushed to log
+let _pipelineStats  = null;
+let _procPhase      = null; // 'transcribing' | 'diarizing' | 'uploading'
+let _procPhaseStart = null; // when current phase started
+let _speakers       = [];
+let _todayMeetings  = [];  // today's calendar events for timeline overlay
+let _highlightSpeaker = null; // speaker name to highlight in transcript viewer
+
+function esc(s) {
+  return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function fmtTime(s) { const m = String(s).match(/(\d{2}:\d{2})/); return m ? m[1] : String(s); }
+function nowHM() { const n=new Date(); return n.getHours().toString().padStart(2,'0')+':'+n.getMinutes().toString().padStart(2,'0'); }
+function fmtHM(m) { return Math.floor(m/60).toString().padStart(2,'0')+':'+(m%60).toString().padStart(2,'0'); }
+function parseMinFromStr(s) {
+  if (!s) return null;
+  const d = new Date(String(s).replace(' ', 'T'));
+  return isNaN(d) ? null : d.getHours()*60 + d.getMinutes();
+}
+function isoToLocalHM(iso, withDate) {
+  if (!iso) return '—';
+  const d = new Date(String(iso).replace(' ', 'T'));
+  if (isNaN(d)) return iso.slice(11,16);
+  const hm = d.getHours().toString().padStart(2,'0')+':'+d.getMinutes().toString().padStart(2,'0');
+  if (!withDate) return hm;
+  const today = new Date();
+  const sameDay = d.getFullYear()===today.getFullYear() && d.getMonth()===today.getMonth() && d.getDate()===today.getDate();
+  if (sameDay) return hm;
+  const yesterday = new Date(today); yesterday.setDate(today.getDate()-1);
+  const isYesterday = d.getFullYear()===yesterday.getFullYear() && d.getMonth()===yesterday.getMonth() && d.getDate()===yesterday.getDate();
+  if (isYesterday) return 'вчера ' + hm;
+  return d.getDate().toString().padStart(2,'0')+'.'+(d.getMonth()+1).toString().padStart(2,'0')+' ' + hm;
+}
+
+// ── Collapsible cards ──────────────────────────────────────────────────────
+function toggleCard(id) {
+  const card = document.getElementById(id);
+  if (!card) return;
+  const content = card.querySelector('.card-content');
+  const isCollapsed = card.classList.toggle('collapsed');
+  if (content) content.style.maxHeight = isCollapsed ? '0' : '3000px';
+  try { localStorage.setItem('vl-card-'+id, isCollapsed ? '1' : '0'); } catch(e) {}
+}
+
+function initCards() {
+  document.querySelectorAll('.card').forEach(card => {
+    const content = card.querySelector('.card-content');
+    if (!content) return;
+    content.style.maxHeight = '3000px';
+    try {
+      if (localStorage.getItem('vl-card-'+card.id) === '1') {
+        card.classList.add('collapsed');
+        content.style.maxHeight = '0';
+      }
+    } catch(e) {}
+  });
+}
+
+// ── Tab switching ──────────────────────────────────────────────────────────
+function switchTab(name, el) {
+  document.querySelectorAll('.hdr-tab').forEach(t => t.classList.remove('active'));
+  if (el) el.classList.add('active');
+  document.getElementById('tab-monitor').style.display     = name==='monitor'     ? 'contents' : 'none';
+  document.getElementById('tab-speakers').style.display    = name==='speakers'    ? 'block'    : 'none';
+  document.getElementById('tab-transcripts').style.display = name==='transcripts' ? 'block'    : 'none';
+
+  if (name === 'transcripts') fetchAndRenderTxList();
+  if (name === 'speakers')    { fetchSpeakers(); fetchSimilarSpeakers(); fetchPendingLabels(); fetchEnrollStatus(); }
+}
+
+// ── State machine ──────────────────────────────────────────────────────────
+const STATE_CFG = {
+  off:       { label: 'Выключен',    cls: 'off',       dotBg: 'var(--muted2)', dotAnim: 'none',                       since: 'Сервис не запущен',           showChunk: false },
+  standby:   { label: 'Готов',       cls: 'standby',   dotBg: 'var(--green)',  dotAnim: 'none',                       since: 'Ожидание записи',             showChunk: false },
+  recording: { label: 'Запись',      cls: 'recording', dotBg: 'var(--danger)', dotAnim: 'pulse 1.2s infinite',        since: 'Идёт запись',                 showChunk: true  },
+  transcribing:{ label: 'Транскрипция', cls: 'recording', dotBg: 'var(--warn)', dotAnim: 'pulse .8s infinite',       since: 'Обработка чанка…',            showChunk: true  },
+  uploading: { label: 'Загрузка',    cls: 'standby',   dotBg: 'var(--accent)', dotAnim: 'pulse 1s infinite',          since: 'Загрузка в Drive…',           showChunk: false },
+  init:      { label: 'Инициализация', cls:'init',     dotBg: 'var(--accent)', dotAnim: 'pulse .8s infinite',         since: 'Загрузка модели…',            showChunk: false },
+  finishing: { label: 'Завершение',  cls: 'init',      dotBg: 'var(--warn)',   dotAnim: 'pulse .8s infinite',         since: 'Запись остановлена, расшифровка идёт…', showChunk: false },
+};
+
+function applyState(apiState) {
+  _curState = apiState;
+  // Update header badge only; card is handled by renderStatusBlock()
+  const cfg = STATE_CFG[apiState] || STATE_CFG.off;
+  const hdr = document.getElementById('hdr-badge');
+  const isRec = apiState === 'recording' || apiState === 'transcribing';
+  if (isRec) {
+    hdr.innerHTML = `<div class="rec-btn"><div class="rec-dot"></div>Запись идёт</div>`;
+  } else if (apiState === 'finishing') {
+    hdr.innerHTML = `<div class="hdr-status-badge" style="border-color:rgba(247,200,108,.4);color:var(--warn);background:rgba(247,200,108,.08)">◎ Расшифровка…</div>`;
+  } else if (apiState === 'standby' || apiState === 'uploading') {
+    hdr.innerHTML = `<div class="hdr-status-badge" style="border-color:rgba(61,232,160,.4);color:var(--green);background:rgba(61,232,160,.08)">● ${cfg.label}</div>`;
+  } else if (apiState === 'off') {
+    hdr.innerHTML = `<div class="hdr-status-badge">↻ Выключен</div>`;
+  } else {
+    hdr.innerHTML = `<div class="hdr-status-badge" style="border-color:rgba(124,106,247,.4);color:var(--accent);background:rgba(124,106,247,.08)">● ${cfg.label}</div>`;
+  }
+}
+
+function renderStatusBlock(s) {
+  const running    = s.recorder_running ?? false;
+  const rawState   = s.state || 'idle';
+  const state      = running ? (rawState === 'idle' ? 'standby' : rawState) : 'off';
+  const recPaused  = s.recording_paused  ?? false;
+  const procPaused = s.processing_paused ?? false;
+  const pendingCnt = (s.pending_wavs || []).length;
+  const activeCnt  = s.active_processing || 0;
+
+  const offRow = document.getElementById('status-off-row');
+  const rows   = document.getElementById('status-rows');
+  const ctrl   = document.getElementById('state-controls');
+
+  const updEl = document.getElementById('status-updated');
+  if (updEl) {
+    const now = new Date();
+    updEl.textContent = 'обновлено ' + now.getHours().toString().padStart(2,'0') + ':' +
+      now.getMinutes().toString().padStart(2,'0') + ':' + now.getSeconds().toString().padStart(2,'0');
+  }
+
+  if (state === 'off') {
+    offRow.style.display = '';
+    rows.style.display   = 'none';
+    ctrl.innerHTML = '';
+    return;
+  }
+
+  offRow.style.display = 'none';
+  rows.style.display   = '';
+
+  // ── Recording row ─────────────────────────────────────────────────────────
+  const recDot    = document.getElementById('sr-rec-dot');
+  const recStatus = document.getElementById('sr-rec-status');
+  const recBtn    = document.getElementById('sr-rec-btn');
+
+  if (recPaused) {
+    recDot.style.background = 'var(--muted)';
+    recDot.style.animation  = 'none';
+    recStatus.textContent   = 'на паузе';
+    recBtn.textContent      = '▶ Возобновить';
+    recBtn.className        = 'sr-btn resume';
+  } else if (state === 'recording') {
+    recDot.style.background = 'var(--danger)';
+    recDot.style.animation  = 'pulse 1.2s infinite';
+    recStatus.textContent   = 'идёт запись';
+    recBtn.textContent      = '⏸ Пауза';
+    recBtn.className        = 'sr-btn active';
+  } else if (state === 'finishing') {
+    recDot.style.background = 'var(--muted2)';
+    recDot.style.animation  = 'none';
+    recStatus.textContent   = 'остановлена';
+    recBtn.textContent      = '▶ Возобновить';
+    recBtn.className        = 'sr-btn resume';
+  } else {
+    recDot.style.background = 'var(--green)';
+    recDot.style.animation  = 'none';
+    recStatus.textContent   = 'ожидание';
+    recBtn.textContent      = '⏸ Пауза';
+    recBtn.className        = 'sr-btn';
+  }
+
+  // ── Processing row ────────────────────────────────────────────────────────
+  const procDot    = document.getElementById('sr-proc-dot');
+  const procStatus = document.getElementById('sr-proc-status');
+  const procBtn    = document.getElementById('sr-proc-btn');
+
+  const isActiveProc = state === 'transcribing' || state === 'diarizing' || state === 'uploading';
+  if (procPaused) {
+    procDot.style.background = 'var(--muted)';
+    procDot.style.animation  = 'none';
+    procStatus.textContent   = pendingCnt > 0 ? `на паузе · ${pendingCnt} ждёт` : 'на паузе';
+    procBtn.textContent      = '▶ Возобновить';
+    procBtn.className        = 'sr-btn resume';
+  } else if (isActiveProc) {
+    procDot.style.background = 'var(--warn)';
+    procDot.style.animation  = 'pulse .8s infinite';
+    const phaseLabel = state === 'transcribing' ? 'транскрипция' : state === 'diarizing' ? 'диаризация' : 'загрузка';
+    procStatus.textContent   = pendingCnt > 0 ? `${phaseLabel} · ${pendingCnt} ждёт` : phaseLabel;
+    procBtn.textContent      = '⏸ Пауза';
+    procBtn.className        = 'sr-btn active';
+  } else {
+    procDot.style.background = 'var(--green)';
+    procDot.style.animation  = 'none';
+    procStatus.textContent   = pendingCnt > 0 ? `${pendingCnt} в очереди` : 'свободно';
+    procBtn.textContent      = '⏸ Пауза';
+    procBtn.className        = 'sr-btn';
+  }
+
+  // ── Per-row progress bars ─────────────────────────────────────────────────
+  const showRecProgress  = state === 'recording' && !recPaused;
+  const showProcProgress = !procPaused && isActiveProc;
+  document.getElementById('sr-rec-progress').style.display  = showRecProgress  ? 'block' : 'none';
+  document.getElementById('sr-proc-progress').style.display = showProcProgress ? 'block' : 'none';
+  // Track phase transitions for the processing progress bar
+  if (isActiveProc) {
+    if (_procPhase !== state) { _procPhase = state; _procPhaseStart = new Date(); }
+  } else {
+    _procPhase = null; _procPhaseStart = null;
+  }
+
+  // ── Service control row ───────────────────────────────────────────────────
+  if (state === 'finishing') {
+    ctrl.innerHTML = `<button class="state-btn danger" onclick="stopRecorder()" title="Принудительно перезапустить">↻ Перезапустить</button>`;
+  } else {
+    ctrl.innerHTML = `<button class="state-btn danger" onclick="stopRecorder()">↻ Выключить</button>`;
+  }
+}
+
+async function toggleRecording() {
+  const btn = document.getElementById('sr-rec-btn');
+  const resume = btn.textContent.includes('Возобновить');
+  btn.disabled = true;
+  try {
+    await fetch(`${API}/recorder/recording/${resume ? 'resume' : 'pause'}`, {method:'POST'});
+    await fetchState();
+  } finally { btn.disabled = false; }
+}
+
+async function toggleProcessing() {
+  const btn = document.getElementById('sr-proc-btn');
+  const resume = btn.textContent.includes('Возобновить');
+  btn.disabled = true;
+  try {
+    await fetch(`${API}/recorder/processing/${resume ? 'resume' : 'pause'}`, {method:'POST'});
+    await fetchState();
+  } finally { btn.disabled = false; }
+}
+
+// ── Fetch status ──────────────────────────────────────────────────────────
+async function fetchState() {
+  try {
+    const s = await (await fetch(`${API}/state`)).json();
+
+    // ── Recorder running ────────────────────────────────────────────────
+    const wasRunning = _recRunning;
+    _recRunning = s.recorder_running ?? false;
+    if (!_recRunning && wasRunning && _curState === 'finishing') {
+      applyState('off');
+      pushActivity('var(--muted2)', '●', 'Расшифровка завершена, сервис остановлен', null);
+    }
+
+    // ── Recorder state ──────────────────────────────────────────────────
+    const apiState = s.state || 'idle';
+    const mappedState = _recRunning ? (apiState === 'idle' ? 'standby' : apiState) : 'off';
+    if (!(_curState === 'finishing' && ['recording','transcribing','diarizing'].includes(mappedState))) {
+      applyState(mappedState);
+    }
+    renderStatusBlock(s);
+
+    if (s.current_chunk_start) _chunkStart = new Date(s.current_chunk_start);
+
+    const lb = document.getElementById('loopback-dot');
+    const lbSub = document.getElementById('loopback-sub');
+    if (s.loopback_active) { lb.style.background = 'var(--green)'; lbSub.textContent = '⊕ Loopback активен'; }
+    else { lb.style.background = 'var(--muted)'; lbSub.textContent = 'Захват аудио из Zoom/Meet напрямую'; }
+
+    if (s.whisper_device) {
+      const devEl = document.getElementById('cfg-d-device');
+      if (s.whisper_device.toLowerCase() === 'cuda') { devEl.textContent = 'GPU CUDA'; devEl.className = 'cfg-val green'; }
+      else { devEl.textContent = s.whisper_device.toUpperCase(); devEl.className = 'cfg-val warn'; }
+    }
+
+    renderErrors(s.errors || []);
+    renderSystemErrors(s.system_errors || []);
+
+    const cal = s.last_calendar_event;
+    if (cal && _activeMeetings.length <= 1) {
+      document.getElementById('cal-content').innerHTML = `
+        <div class="cal-card">
+          <div class="cal-subject">${esc(cal.subject)}</div>
+          <div class="cal-detail">
+            ${esc(fmtTime(cal.start))} → ${esc(fmtTime(cal.end))}<br>
+            ${cal.organizer ? '👤 ' + esc(cal.organizer) + '<br>' : ''}
+            ${cal.location  ? '📍 ' + esc(cal.location)  + '<br>' : ''}
+            ${cal.categories ? '🏷 ' + esc(cal.categories) : ''}
+          </div>
+        </div>`;
+    }
+
+    if ((s.pending_labels ?? 0) > 0) fetchPendingLabels();
+
+    if (s.last_transcript && s.last_transcript !== _lastLoggedTx) {
+      _lastLoggedTx = s.last_transcript;
+      const name = s.last_transcript.split(/[\\/]/).pop();
+      pushActivity('green', '●', `Транскрипт: <span class="dim">${esc(name)}</span>`, 'ok');
+    }
+
+    // ── System load ─────────────────────────────────────────────────────
+    if (s.cpu_percent != null) {
+      document.getElementById('g-cpu').textContent     = s.cpu_percent.toFixed(0) + '%';
+      document.getElementById('g-cpu-sub').textContent = (s.cpu_cores || '—') + ' ядер';
+      document.getElementById('g-cpu-bar').style.width = s.cpu_percent + '%';
+    }
+    if (s.ram_used_gb != null) {
+      document.getElementById('g-ram').textContent     = s.ram_used_gb + ' GB';
+      document.getElementById('g-ram-sub').textContent = 'из ' + (s.ram_total_gb || '—') + ' GB';
+      document.getElementById('g-ram-bar').style.width = (s.ram_percent || 0) + '%';
+      const ramSlider = document.getElementById('res-ram');
+      if (s.ram_total_gb && ramSlider) {
+        const totalGB = Math.ceil(s.ram_total_gb);
+        ramSlider.max = totalGB;
+        if (!ramSlider._userSet) { ramSlider.value = totalGB; document.getElementById('res-ram-val').textContent = totalGB + ' GB'; }
+      }
+    }
+    if (s.gpu_util_percent != null) {
+      document.getElementById('gpu-gauge').style.display  = '';
+      document.getElementById('vram-gauge').style.display = '';
+      document.getElementById('g-gpu').textContent     = s.gpu_util_percent + '%';
+      document.getElementById('g-gpu-sub').textContent = (s.gpu_temp_c ?? '?') + '°C';
+      document.getElementById('g-gpu-bar').style.width = s.gpu_util_percent + '%';
+      const vramPct = s.gpu_mem_percent ?? 0;
+      document.getElementById('g-vram').textContent     = Math.round((s.gpu_mem_used_mb||0)/1024*10)/10 + ' GB';
+      document.getElementById('g-vram-sub').textContent = 'из ' + Math.round((s.gpu_mem_total_mb||0)/1024*10)/10 + ' GB';
+      document.getElementById('g-vram-bar').style.width = vramPct + '%';
+    }
+
+    // ── Pipeline stats ──────────────────────────────────────────────────
+    _pipelineStats = s;
+    let rtf = s.avg_transcription_rtf ?? null;
+    if (rtf == null && s.recent?.length) {
+      const valid = s.recent.slice(-10).filter(c => c.audio_s > 0);
+      if (valid.length) rtf = valid.reduce((a, c) => a + c.transcription_s / c.audio_s, 0) / valid.length;
+    }
+    if (rtf != null) {
+      rtf = Math.round(rtf * 100) / 100;
+      document.getElementById('g-transc').textContent = rtf.toFixed(2) + 'x';
+      const color = rtf < 1 ? 'var(--green)' : rtf < 2 ? 'var(--warn)' : 'var(--danger)';
+      document.getElementById('g-transc').style.color = color;
+      document.getElementById('g-transc-bar').style.background = color;
+      document.getElementById('g-transc-bar').style.width = Math.min(100, rtf / 3 * 100) + '%';
+      document.getElementById('g-transc-sub').textContent = rtf < 1 ? 'быстрее реального времени' : 'медленнее реального времени';
+    }
+    if (s.avg_diarization_s != null) {
+      document.getElementById('g-diariz').textContent = s.avg_diarization_s + 's';
+      document.getElementById('g-diariz-bar').style.width = Math.min(100, s.avg_diarization_s / _chunkSeconds * 100) + '%';
+    }
+    if (s.recent?.length) buildActivityFromRecent(s.recent);
+
+  } catch(e) {}
+}
+
+// ── Per-row progress updates ──────────────────────────────────────────────
+function updateProgress() {
+  // Recording progress bar
+  const recProg = document.getElementById('sr-rec-progress');
+  if (recProg && recProg.style.display !== 'none' && _chunkStart) {
+    const elapsed = (Date.now() - _chunkStart.getTime()) / 1000;
+    const pct = Math.min(100, (elapsed / _chunkSeconds) * 100);
+    document.getElementById('sr-rec-fill').style.width = pct.toFixed(1) + '%';
+    const rem = Math.max(0, _chunkSeconds - elapsed);
+    document.getElementById('sr-rec-info').innerHTML =
+      `${pct.toFixed(0)}% · осталось <strong style="color:var(--text)">${Math.floor(rem/60)}:${String(Math.floor(rem%60)).padStart(2,'0')}</strong> из ${_chunkSeconds/60|0}:00`;
+  }
+  // Processing progress bar — phase-based
+  const procProg = document.getElementById('sr-proc-progress');
+  if (!procProg || procProg.style.display === 'none') return;
+  const fill = document.getElementById('sr-proc-fill');
+  const info = document.getElementById('sr-proc-info');
+  const avgTx = _pipelineStats?.avg_transcription_s || 0;
+  const avgDi = _pipelineStats?.avg_diarization_s   || 0;
+  const phaseElapsed = _procPhaseStart ? (Date.now() - _procPhaseStart.getTime()) / 1000 : 0;
+  fill.classList.remove('indeterminate');
+
+  if (_procPhase === 'transcribing') {
+    // 0–60% range
+    const pct = avgTx > 5 ? Math.min(58, phaseElapsed / avgTx * 60) : Math.min(50, phaseElapsed * 0.25);
+    fill.style.width = pct.toFixed(1) + '%';
+    const rem = avgTx > 5 ? Math.max(0, avgTx - phaseElapsed) : null;
+    info.textContent = rem != null ? `транскрипция · ещё ~${Math.round(rem)}с` : 'транскрипция…';
+  } else if (_procPhase === 'diarizing') {
+    // 60–90% range
+    const pct = 60 + (avgDi > 5 ? Math.min(28, phaseElapsed / avgDi * 30) : Math.min(20, phaseElapsed * 0.35));
+    fill.style.width = pct.toFixed(1) + '%';
+    const rem = avgDi > 5 ? Math.max(0, avgDi - phaseElapsed) : null;
+    info.textContent = rem != null ? `диаризация · ещё ~${Math.round(rem)}с` : 'диаризация…';
+  } else if (_procPhase === 'uploading') {
+    fill.style.width = '92%';
+    info.textContent = 'загрузка в Drive…';
+  }
+}
+
+
+function buildActivityFromRecent(recent) {
+  [...recent].reverse().forEach(c => {
+    const key = c.started_at || c.chunk_path || '';
+    if (!key || _actLog.some(e => e._key === key)) return;
+    const ts  = isoToLocalHM(c.started_at, true);
+    const spk = c.speakers ? c.speakers + ' спикер' + (c.speakers > 1 ? 'а' : '') : '';
+    const seg = c.segments  ? c.segments + ' реплик' : '';
+    _actLog.push({ _key: key, time: ts, color: 'var(--green)', icon: '●',
+      text: `Чанк обработан${spk ? ', ' + spk : ''}${seg ? ', ' + seg : ''}`, badge: 'ok' });
+  });
+  _actLog.sort((a, b) => (b.time > a.time ? 1 : b.time < a.time ? -1 : 0));
+  if (_actLog.length > 30) _actLog.length = 30;
+  renderActivityLog(_actLog);
+}
+
+function pushActivity(color, icon, text, badge) {
+  _actLog.unshift({ time: nowHM(), color, icon, text, badge });
+  if (_actLog.length > 30) _actLog.pop();
+  renderActivityLog(_actLog);
+}
+
+function renderActivityLog(entries) {
+  const el = document.getElementById('activity-log');
+  if (!entries.length) {
+    el.innerHTML = '<div class="log-empty">Ожидание данных…</div>';
+    return;
+  }
+  el.innerHTML = entries.map(e => `
+    <div class="log-entry">
+      <div class="log-time">${esc(e.time)}</div>
+      <div class="log-icon" style="color:${e.color}">${e.icon}</div>
+      <div class="log-text">${e.text}${e.badge ? `<span class="log-badge ${e.badge}">${e.badge}</span>` : ''}</div>
+    </div>`).join('');
+}
+
+// ── Error log ─────────────────────────────────────────────────────────────
+function renderErrors(errs) {
+  const el  = document.getElementById('err-list');
+  const hdr = document.getElementById('pipe-err-hdr');
+  if (!errs.length) {
+    el.innerHTML = '<div class="err-empty">Ошибок нет</div>';
+    hdr.style.display = 'none';
+  } else {
+    hdr.style.display = '';
+    el.innerHTML = errs.slice(-5).reverse().map(e => `
+      <div class="err-entry">
+        <div class="err-time">${nowHM()}</div>
+        <div class="err-text"><span class="err-title">${esc(e)}</span></div>
+      </div>`).join('');
+  }
+  _updateErrBadge();
+}
+
+function renderSystemErrors(errs) {
+  const sec = document.getElementById('sys-err-section');
+  const el  = document.getElementById('sys-err-list');
+  if (!errs || !errs.length) {
+    sec.style.display = 'none';
+    el.innerHTML = '';
+  } else {
+    sec.style.display = '';
+    el.innerHTML = errs.map(e => {
+      const ts   = isoToLocalHM(e.time, true);
+      const crit = e.severity === 'critical';
+      const tip  = e.prevention ? `data-tip="${esc(e.prevention)}"` : '';
+      return `<div class="err-entry" style="position:relative" ${tip}>
+        <div class="err-time" style="color:${crit ? 'var(--danger)' : 'var(--warn)'}">${esc(ts)}</div>
+        <div class="err-text">
+          <span class="err-title${crit ? '' : ' warn'}">${esc(e.title)}</span>
+          <div class="err-detail">${esc(e.detail)}</div>
+          <div class="err-source">${esc(e.source)} · EventID ${e.event_id} · ${esc(e.log)}</div>
+        </div>
+      </div>`;
+    }).join('');
+  }
+  _updateErrBadge();
+}
+
+function _updateErrBadge() {
+  const bdg      = document.getElementById('err-count-badge');
+  const sysCount = document.getElementById('sys-err-list').children.length;
+  const pipeHas  = !document.getElementById('err-list').querySelector('.err-empty');
+  const pipeCount = pipeHas ? document.getElementById('err-list').children.length : 0;
+  const total = sysCount + pipeCount;
+  if (total === 0) { bdg.style.display = 'none'; return; }
+  bdg.style.display = '';
+  bdg.textContent = total + ' ошибк' + (total === 1 ? 'а' : 'и');
+}
+
+// ── Day coverage ──────────────────────────────────────────────────────────
+function renderDayCoverage(transcripts) {
+  const axisEl  = document.getElementById('tl-axis');
+  const trackEl = document.getElementById('tl-track');
+  const labelsEl= document.getElementById('tl-labels');
+  if (!axisEl || !trackEl || !labelsEl) return;
+
+  const today = new Date().toISOString().slice(0, 10);
+  const todayTx = transcripts.filter(t =>
+    (t.date === today) || t.path.replace(/\\/g,'/').includes(today)
+  );
+
+  const chunkMin = Math.max(1, Math.round(_chunkSeconds / 60));
+
+  // Parse chunk start times from filenames: YYYY-MM-DD_HH-MM-SS.txt
+  const chunks = todayTx.map(t => {
+    const m = t.name.match(/(\d{2})-(\d{2})-(\d{2})\.(txt|md)/);
+    if (!m) return null;
+    const startMin = parseInt(m[1])*60 + parseInt(m[2]);
+    return { startMin, endMin: startMin + chunkMin, status: 'done', label: t.name };
+  }).filter(Boolean).sort((a,b) => a.startMin - b.startMin);
+
+  // Add currently-recording chunk
+  const isActive = _curState === 'recording' || _curState === 'transcribing';
+  if (isActive && _chunkStart) {
+    const cs = _chunkStart instanceof Date ? _chunkStart : new Date(_chunkStart);
+    if (!isNaN(cs)) {
+      const csMin = cs.getHours()*60 + cs.getMinutes();
+      if (!chunks.some(c => c.startMin === csMin)) {
+        const nowMin = new Date().getHours()*60 + new Date().getMinutes();
+        chunks.push({ startMin: csMin, endMin: Math.max(csMin + chunkMin, nowMin), status: 'active', label: 'идёт запись' });
+      }
+    }
+  }
+
+  // Add in-processing chunks (saved but not yet transcribed)
+  // Prefer explicit list from recorder; fall back to inferring from active_processing count
+  const processingStarts = _pipelineStats?.active_chunk_starts || [];
+  if (processingStarts.length > 0) {
+    processingStarts.forEach(iso => {
+      const d = new Date(iso);
+      if (isNaN(d)) return;
+      const pMin = d.getHours()*60 + d.getMinutes();
+      if (!chunks.some(c => c.startMin === pMin)) {
+        chunks.push({ startMin: pMin, endMin: pMin + chunkMin, status: 'queued', label: 'в обработке' });
+      }
+    });
+  } else {
+    // Infer from active_processing count + last completed chunk timestamp
+    const activeCount = _pipelineStats?.active_processing || 0;
+    const recent = _pipelineStats?.recent || [];
+    if (activeCount > 0 && recent.length > 0) {
+      const sorted = [...recent].sort((a, b) => (a.started_at > b.started_at ? 1 : -1));
+      const lastMs = new Date(sorted[sorted.length - 1].started_at).getTime();
+      for (let i = 1; i <= activeCount; i++) {
+        const d = new Date(lastMs + i * chunkMin * 60 * 1000);
+        const pMin = d.getHours() * 60 + d.getMinutes();
+        if (!chunks.some(c => c.startMin === pMin)) {
+          chunks.push({ startMin: pMin, endMin: pMin + chunkMin, status: 'queued', label: 'в обработке' });
+        }
+      }
+    }
+  }
+
+  // Add pending WAVs (recorded but not yet queued for transcription)
+  const pendingWavs = _pipelineStats?.pending_wavs || [];
+  pendingWavs.forEach(iso => {
+    const d = new Date(iso);
+    if (isNaN(d)) return;
+    const pMin = d.getHours()*60 + d.getMinutes();
+    if (!chunks.some(c => Math.abs(c.startMin - pMin) < 1)) {
+      chunks.push({ startMin: pMin, endMin: pMin + chunkMin, status: 'pending', label: 'ждёт обработки' });
+    }
+  });
+
+  // Parse meetings — filter stubs (Заглушка category)
+  const STUB_CATS = ['заглушка', 'stub', 'out of office'];
+  const rawMeetings = (_todayMeetings || [])
+    .filter(m => {
+      const cat = (m.categories || '').toLowerCase();
+      return !STUB_CATS.some(s => cat.includes(s));
+    })
+    .map(m => ({
+      name:     m.subject || '—',
+      startMin: parseMinFromStr(m.start),
+      endMin:   parseMinFromStr(m.end),
+    }))
+    .filter(m => m.startMin !== null && m.endMin !== null && m.endMin > m.startMin)
+    .sort((a,b) => a.startMin - b.startMin);
+
+  // Resolve overlapping meetings: keep only user-chosen primary per conflict group
+  const today10 = new Date().toISOString().slice(0, 10);
+  const _tlPrimary = JSON.parse(localStorage.getItem('tl-primary-' + today10) || '{}');
+  const usedIdx = new Array(rawMeetings.length).fill(false);
+  const meetings = [];
+  for (let i = 0; i < rawMeetings.length; i++) {
+    if (usedIdx[i]) continue;
+    const m = rawMeetings[i];
+    const group = [i];
+    for (let j = i + 1; j < rawMeetings.length; j++) {
+      if (!usedIdx[j] && m.startMin < rawMeetings[j].endMin && m.endMin > rawMeetings[j].startMin)
+        group.push(j);
+    }
+    group.forEach(idx => { usedIdx[idx] = true; });
+    if (group.length === 1) {
+      meetings.push({ ...m, alts: [] });
+    } else {
+      const key = String(m.startMin);
+      const chosen = _tlPrimary[key];
+      const groupMs = group.map(idx => rawMeetings[idx]);
+      let primary = groupMs.find(g => g.name === chosen);
+      if (!primary) primary = groupMs.reduce((b, g) => (g.endMin - g.startMin) < (b.endMin - b.startMin) ? g : b);
+      meetings.push({ ...primary, alts: groupMs.filter(g => g !== primary), overlapKey: key });
+    }
+  }
+
+  if (!chunks.length && !meetings.length) {
+    trackEl.innerHTML = '';
+    axisEl.innerHTML = '';
+    labelsEl.innerHTML = '';
+    document.getElementById('day-cov-range').textContent = '—';
+    return;
+  }
+
+  // Determine full time range
+  const allStarts = [...chunks.map(c => c.startMin), ...meetings.map(m => m.startMin)];
+  const allEnds   = [...chunks.map(c => c.endMin),   ...meetings.map(m => m.endMin)];
+  const dayStart  = Math.min(...allStarts);
+  const dayEnd    = Math.max(...allEnds);
+  const totalMin  = dayEnd - dayStart;
+  if (totalMin <= 0) return;
+
+  const pct = v => ((v - dayStart) / totalMin * 100).toFixed(3);
+  const wPct= v => (v / totalMin * 100).toFixed(3);
+
+  // ── Axis ticks ──
+  const tickCount = 5;
+  let axisTicks = '';
+  for (let i = 0; i <= tickCount; i++) {
+    const m = dayStart + Math.round(i / tickCount * totalMin);
+    const l = (i / tickCount * 100).toFixed(1);
+    axisTicks += `<span class="tl-tick" style="left:${l}%">${fmtHM(m)}</span>`;
+  }
+  axisEl.innerHTML = axisTicks;
+
+  // ── Track: meeting blocks + chunk stripes ──
+  let trackHTML = '';
+  const labelItems = [];
+  const assigned = new Set();
+
+  meetings.forEach(mtg => {
+    const left  = +pct(mtg.startMin);
+    const width = +wPct(mtg.endMin - mtg.startMin);
+    if (width <= 0) return;
+
+    // Chunk stripes inside this meeting
+    let stripes = '';
+    chunks.filter(c => c.startMin < mtg.endMin && c.endMin > mtg.startMin).forEach(c => {
+      assigned.add(c);
+      const cS = Math.max(c.startMin, mtg.startMin);
+      const cE = Math.min(c.endMin,   mtg.endMin);
+      const dur = mtg.endMin - mtg.startMin;
+      const cLeft  = ((cS - mtg.startMin) / dur * 100).toFixed(3);
+      const cWidth = Math.max(0.4, (cE - cS) / dur * 100).toFixed(3);
+      stripes += `<div class="tl-chunk ${c.status}" style="left:${cLeft}%;width:${cWidth}%" title="${esc(c.label)}"></div>`;
+    });
+
+    trackHTML += `<div class="tl-meet" style="left:${left.toFixed(3)}%;width:${width.toFixed(3)}%">${stripes}</div>`;
+    labelItems.push({ left, width, name: mtg.name, muted: false, alts: mtg.alts || [], overlapKey: mtg.overlapKey });
+  });
+
+  // Unassigned chunks — group consecutive ones into labeled blocks
+  const unassigned = chunks.filter(c => !assigned.has(c));
+  if (unassigned.length) {
+    const gapThresh = chunkMin * 4;
+    const groups = [];
+    unassigned.forEach(c => {
+      const last = groups[groups.length - 1];
+      if (last && c.startMin - last.end <= gapThresh) {
+        last.end = Math.max(last.end, c.endMin);
+        last.chunks.push(c);
+      } else {
+        groups.push({ start: c.startMin, end: c.endMin, chunks: [c] });
+      }
+    });
+    groups.forEach(g => {
+      const left  = +pct(g.start);
+      const width = Math.max(0.3, +wPct(g.end - g.start));
+      let stripes = '';
+      const dur = g.end - g.start;
+      g.chunks.forEach(c => {
+        const cS = c.startMin - g.start;
+        const cW = Math.max(0.4, (c.endMin - c.startMin) / dur * 100).toFixed(3);
+        stripes += `<div class="tl-chunk ${c.status}" style="left:${(cS/dur*100).toFixed(3)}%;width:${cW}%" title="${esc(c.label)}"></div>`;
+      });
+      trackHTML += `<div class="tl-meet" style="left:${left.toFixed(3)}%;width:${width.toFixed(3)}%">${stripes}</div>`;
+      labelItems.push({ left, width, name: `${fmtHM(g.start)}–${fmtHM(g.end)}`, muted: true, alts: [], overlapKey: null });
+    });
+  }
+
+  // ── Labels: assign two rows to avoid collisions ──
+  labelItems.sort((a,b) => a.left - b.left);
+  const rowEdge = [0, 0];
+  let labelsHTML = '';
+  labelItems.forEach(item => {
+    let row;
+    if      (item.left >= rowEdge[0]) row = 0;
+    else if (item.left >= rowEdge[1]) row = 1;
+    else row = rowEdge[0] <= rowEdge[1] ? 0 : 1;
+    rowEdge[row] = item.left + item.width;
+    const top   = row === 1 ? 'top:18px;' : 'top:0;';
+    const color = item.muted ? 'color:var(--muted);' : '';
+    const hasAlts = item.alts && item.alts.length > 0;
+    if (hasAlts) {
+      const nextName = item.alts[0].name;
+      const allNames = [item.name, ...item.alts.map(a => a.name)].join(' / ');
+      labelsHTML += `<div class="tl-label tl-label-alt" style="left:${item.left.toFixed(3)}%;width:${item.width.toFixed(3)}%;${top}${color}" title="${esc(allNames)}" onclick="tlCycleMain('${today10}','${item.overlapKey}','${nextName.replace(/'/g,"\\'")}')"><b>${esc(item.name)}</b></div>`;
+    } else {
+      labelsHTML += `<div class="tl-label" style="left:${item.left.toFixed(3)}%;width:${item.width.toFixed(3)}%;${top}${color}" title="${esc(item.name)}">${esc(item.name)}</div>`;
+    }
+  });
+
+  trackEl.innerHTML  = trackHTML;
+  labelsEl.innerHTML = labelsHTML;
+
+  document.getElementById('day-cov-range').textContent =
+    fmtHM(dayStart) + ' – ' + fmtHM(dayEnd);
+}
+
+async function fetchTodayMeetings() {
+  try {
+    const r = await (await fetch(`${API}/today_meetings`)).json();
+    _todayMeetings = r.meetings || [];
+    if (_allTx.length) renderDayCoverage(_allTx);
+  } catch(e) { _todayMeetings = []; }
+}
+
+function tlCycleMain(today10, key, nextName) {
+  const stored = JSON.parse(localStorage.getItem('tl-primary-' + today10) || '{}');
+  stored[key] = nextName;
+  localStorage.setItem('tl-primary-' + today10, JSON.stringify(stored));
+  renderDayCoverage(_allTx);
+}
+
+// ── Config ────────────────────────────────────────────────────────────────
+function openConfigEdit() {
+  const card = document.getElementById('card-settings');
+  if (!card) return;
+  if (card.classList.contains('collapsed')) toggleCard('card-settings');
+  card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  card.style.transition = 'box-shadow .2s';
+  card.style.boxShadow = '0 0 0 2px var(--accent)';
+  setTimeout(() => { card.style.boxShadow = ''; }, 1400);
+}
+
+async function fetchConfig() {
+  try {
+    const cfg = await (await fetch(`${API}/config`)).json();
+    // display
+    document.getElementById('cfg-d-model').textContent  = cfg.whisper_model  || '—';
+    document.getElementById('cfg-d-lang').textContent   = cfg.language       || 'auto';
+    document.getElementById('cfg-d-chunk').textContent  = (cfg.chunk_seconds || '—') + 's';
+    document.getElementById('cfg-d-thresh').textContent = cfg.silence_threshold?.toFixed(4) || '—';
+    document.getElementById('cfg-d-cpu').textContent    = cfg.cpu_threads    || '—';
+    if (cfg.whisper_device) {
+      const dev = cfg.whisper_device.toLowerCase();
+      const devEl = document.getElementById('cfg-d-device');
+      devEl.textContent = dev === 'cuda' ? 'GPU CUDA' : dev.toUpperCase();
+      devEl.className = 'cfg-val ' + (dev === 'cuda' ? 'green' : 'warn');
+    }
+    // form
+    if (cfg.whisper_model)       document.getElementById('cfg-model').value    = cfg.whisper_model;
+    if (cfg.whisper_device)      document.getElementById('cfg-device').value   = cfg.whisper_device;
+    if (cfg.language !== undefined) document.getElementById('cfg-lang').value  = cfg.language || '';
+    if (cfg.chunk_seconds)       document.getElementById('cfg-chunk').value    = cfg.chunk_seconds;
+    if (cfg.gdrive_folder_id)    document.getElementById('cfg-gdrive').value   = cfg.gdrive_folder_id;
+    _cfgKeep   = !!cfg.keep_audio;
+    _cfgDiariz = cfg.diarization_enabled !== false;
+    _chunkSeconds = cfg.chunk_seconds || 300;
+    document.getElementById('cfg-keep').className   = 'toggle' + (_cfgKeep   ? ' on' : '');
+    document.getElementById('cfg-diariz').className = 'toggle' + (_cfgDiariz ? ' on' : '');
+    // resource sliders
+    if (cfg.cpu_threads != null) {
+      document.getElementById('res-cpu').value = cfg.cpu_threads;
+      document.getElementById('res-cpu-val').textContent = cfg.cpu_threads;
+    }
+    if (cfg.ram_limit_gb != null) {
+      document.getElementById('res-ram').value = cfg.ram_limit_gb;
+      document.getElementById('res-ram-val').textContent = cfg.ram_limit_gb + ' GB';
+    }
+    if (cfg.gpu_memory_fraction != null) {
+      const v = Math.round(cfg.gpu_memory_fraction * 100);
+      document.getElementById('res-gpu').value = v;
+      document.getElementById('res-gpu-val').textContent = v + '%';
+    }
+    if (cfg.max_parallel_chunks != null) {
+      document.getElementById('res-par').value = cfg.max_parallel_chunks;
+      document.getElementById('res-par-val').textContent = cfg.max_parallel_chunks;
+    }
+    return cfg;
+  } catch(e) { return {}; }
+}
+
+function toggleKeep(el)   { _cfgKeep   = !_cfgKeep;   el.className = 'toggle' + (_cfgKeep   ? ' on' : ''); }
+function toggleDiariz(el) { _cfgDiariz = !_cfgDiariz; el.className = 'toggle' + (_cfgDiariz ? ' on' : ''); }
+
+async function saveConfig() {
+  _chunkSeconds = parseInt(document.getElementById('cfg-chunk').value) || 300;
+  const newDevice = document.getElementById('cfg-device').value;
+  const newModel  = document.getElementById('cfg-model').value;
+  const prevDevice = document.getElementById('cfg-d-device')?.textContent?.toLowerCase().includes('gpu') ? 'cuda' : 'cpu';
+  const prevModel  = document.getElementById('cfg-d-model')?.textContent?.trim();
+  const body = {
+    whisper_model:        newModel,
+    language:             document.getElementById('cfg-lang').value || null,
+    chunk_seconds:        _chunkSeconds,
+    gdrive_folder_id:     document.getElementById('cfg-gdrive').value.trim(),
+    keep_audio:           _cfgKeep,
+    diarization_enabled:  _cfgDiariz,
+    whisper_device:       newDevice,
+  };
+  await fetch(`${API}/config`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
+  const msg = document.getElementById('cfg-saved-msg');
+  msg.style.opacity = '1';
+  setTimeout(() => msg.style.opacity = '0', 3000);
+  fetchConfig();
+  const modelChanged  = newModel  !== prevModel;
+  const deviceChanged = newDevice !== prevDevice;
+  if ((modelChanged || deviceChanged) && _recRunning) {
+    const r = await (await fetch(`${API}/reload_whisper`, { method: 'POST' })).json();
+    if (r.ok) pushActivity('var(--warn)', '↺', `Перезагрузка Whisper на ${newDevice.toUpperCase()}… (ждёт конца текущего чанка)`, null);
+  }
+}
+
+async function saveResources() {
+  const body = {
+    cpu_threads:          parseInt(document.getElementById('res-cpu').value),
+    ram_limit_gb:         parseInt(document.getElementById('res-ram').value),
+    gpu_memory_fraction:  parseInt(document.getElementById('res-gpu').value) / 100,
+    max_parallel_chunks:  parseInt(document.getElementById('res-par').value),
+  };
+  await fetch(`${API}/config`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
+  document.getElementById('cfg-d-cpu').textContent = body.cpu_threads;
+  pushActivity('var(--accent)', '●', `Ресурсы обновлены: CPU=${body.cpu_threads} потоков, RAM=${body.ram_limit_gb}GB, GPU=${Math.round(body.gpu_memory_fraction*100)}%`, 'ok');
+}
+
+// ── Recorder start/stop ───────────────────────────────────────────────────
+async function startRecorder() {
+  const btns = document.querySelectorAll('.state-btn, .sr-btn');
+  btns.forEach(b => b.disabled = true);
+  try {
+    await fetch(`${API}/recorder/start`, { method: 'POST' });
+    _recRunning = true;
+    if (_curState === 'finishing') _curState = 'off';
+    applyState('init');
+    renderStatusBlock({ recorder_running: true, state: 'init', recording_paused: false, processing_paused: false, pending_wavs: [] });
+    pushActivity('var(--accent)', '●', 'Запуск сервиса…', null);
+    setTimeout(() => { if (_curState === 'init') { applyState('standby'); fetchState(); } }, 3000);
+  } catch(e) {}
+  btns.forEach(b => b.disabled = false);
+}
+
+async function stopRecorder() {
+  const btns = document.querySelectorAll('.state-btn, .sr-btn');
+  btns.forEach(b => b.disabled = true);
+  try {
+    await fetch(`${API}/recorder/stop`, { method: 'POST' });
+    applyState('finishing');
+    renderStatusBlock({ recorder_running: true, state: 'finishing', recording_paused: false, processing_paused: false, pending_wavs: [] });
+    pushActivity('var(--warn)', '◎', 'Запись остановлена, расшифровка завершается…', null);
+  } catch(e) {}
+  btns.forEach(b => b.disabled = false);
+}
+
+// ── Transcripts / Sessions ────────────────────────────────────────────────
+async function fetchTranscripts() {
+  try {
+    _allTx = await (await fetch(`${API}/transcripts`)).json();
+    renderSessions();
+    renderDayCoverage(_allTx);
+  } catch(e) {}
+}
+
+function cleanTxName(raw) {
+  // strip extension
+  let n = raw.replace(/\.(txt|md)$/, '');
+  // strip leading YYYY-MM-DD_HH-MM-SS_ or YYYY-MM-DD_
+  n = n.replace(/^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}_?/, '');
+  n = n.replace(/^\d{4}-\d{2}-\d{2}_?/, '');
+  // replace underscores with spaces
+  n = n.replace(/_/g, ' ').trim();
+  return n || raw.replace(/\.(txt|md)$/, '');
+}
+
+function fmtSessionDate(tx) {
+  // For session/permanent files, date field is the dir name (e.g. "sessions")
+  // Try to extract date from path or filename instead
+  const m = tx.path.match(/(\d{4}-\d{2}-\d{2})/);
+  if (!m) return tx.date || '—';
+  const d = m[1];
+  const today = new Date().toISOString().slice(0, 10);
+  const yest  = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+  if (d === today) return 'сегодня';
+  if (d === yest)  return 'вчера';
+  return d.slice(8) + '.' + d.slice(5, 7); // DD.MM
+}
+
+function renderSessions() {
+  const sessions = _allTx.filter(t => t.path.includes('sessions') || t.path.includes('permanent'));
+  const all      = _allTx.filter(t => !t.path.includes('sessions') && !t.path.includes('permanent'));
+  const display  = sessions.length ? sessions : all.slice(0, 12);
+
+  document.getElementById('sessions-count-badge').textContent = display.length;
+  const el = document.getElementById('sessions-list');
+  if (!display.length) {
+    el.innerHTML = '<div style="padding:20px;text-align:center;font-size:11px;color:var(--muted2)">Нет сессий</div>';
+    return;
+  }
+
+  // Deduplicate by cleaned name — keep the largest file per meeting name
+  const seen = new Map();
+  display.forEach(t => {
+    const key = cleanTxName(t.name);
+    const prev = seen.get(key);
+    if (!prev || (t.size_kb || 0) > (prev.size_kb || 0)) seen.set(key, t);
+  });
+  const _txDate = t => { const m = t.path.match(/(\d{4}-\d{2}-\d{2})/); return m ? m[1] : (t.date || ''); };
+  const deduped = [...seen.values()]
+    .sort((a, b) => _txDate(a) > _txDate(b) ? -1 : 1)
+    .slice(0, 20);
+
+  document.getElementById('sessions-count-badge').textContent = seen.size;
+
+  const COLORS = ['#7c6af7','#3de8a0','#f7c86c','#f76c6c','#a78cf7','#5de8c0'];
+  el.innerHTML = deduped.map((t, i) => {
+    const name  = cleanTxName(t.name);
+    const date  = fmtSessionDate(t);
+    const color = COLORS[i % COLORS.length];
+    const catMatch = t.path.match(/permanent[/\\](.+?)\.txt$/i);
+    const cat = catMatch ? catMatch[1] : '';
+    return `<div class="sess-row" onclick="openTxFromMonitor('${esc(t.path)}','${esc(t.name)}','${esc(t.date)}')">
+      <div class="sess-dot" style="background:${color}"></div>
+      <div class="sess-name" title="${esc(t.name)}">${esc(name)}</div>
+      ${cat ? `<span class="sess-cat">${esc(cat)}</span>` : ''}
+      <div class="sess-date">${esc(date)}</div>
+    </div>`;
+  }).join('');
+}
+
+function openTxFromMonitor(path, name, date) {
+  switchTab('transcripts', document.getElementById('tab-transcripts-btn'));
+  fetchAndRenderTxList().then(() => openTranscript(path, name, date));
+}
+
+async function fetchAndRenderTxList() {
+  try {
+    if (!_allTx.length) _allTx = await (await fetch(`${API}/transcripts`)).json();
+    renderMeetingAgenda();
+  } catch(e) {}
+}
+
+// ── Agenda helpers ─────────────────────────────────────────────────────────
+function _agendaNorm(s) {
+  return (s || '').toLowerCase().replace(/[^а-яёa-z0-9]/gi, '').slice(0, 18);
+}
+function _agendaFileMin(name) {
+  const m = name.match(/[_T](\d{2})[:\-](\d{2})[:\-]\d{2}/);
+  return m ? parseInt(m[1]) * 60 + parseInt(m[2]) : null;
+}
+function _agendaFileTime(name) {
+  const m = name.match(/[_T](\d{2})[:\-](\d{2})[:\-]\d{2}/);
+  return m ? m[1] + ':' + m[2] : '—';
+}
+function _agendaTotalKb(files) {
+  return files.reduce((s, f) => s + (f.size_kb || 0), 0).toFixed(1);
+}
+
+let _agendaItems = [];
+
+function buildMeetingAgenda() {
+  const STUB_CATS = ['заглушка', 'stub'];
+  const today = new Date().toISOString().slice(0, 10);
+  const isSession = f => f.path.replace(/\\/g, '/').includes('/sessions/');
+  const isPermanent = f => f.path.replace(/\\/g, '/').includes('/permanent/');
+
+  const files = _allTx.filter(f => !isPermanent(f));
+  const byDate = {};
+  files.forEach(f => {
+    const d = f.date || 'unknown';
+    if (!byDate[d]) byDate[d] = { sessions: [], chunks: [] };
+    (isSession(f) ? byDate[d].sessions : byDate[d].chunks).push(f);
+  });
+
+  const allItems = [];
+
+  Object.keys(byDate).sort().reverse().forEach(date => {
+    const { sessions, chunks } = byDate[date];
+    const isToday = date === today;
+    const dateLabel = isToday ? 'Сегодня' : date;
+    const items = [];
+
+    if (isToday && _todayMeetings && _todayMeetings.length) {
+      const meetings = _todayMeetings.filter(m =>
+        !STUB_CATS.some(s => (m.categories || '').toLowerCase().includes(s))
+      );
+      const usedS = new Set(), usedC = new Set();
+
+      meetings.forEach(mtg => {
+        const startMin = parseMinFromStr(mtg.start);
+        const endMin   = parseMinFromStr(mtg.end);
+        const mtgNorm  = _agendaNorm(mtg.subject);
+
+        const matchS = sessions.filter(f => {
+          if (usedS.has(f.path)) return false;
+          const fn = _agendaNorm(cleanTxName(f.name));
+          return fn.includes(mtgNorm.slice(0, 8)) || mtgNorm.includes(fn.slice(0, 8));
+        });
+        const matchC = chunks.filter(f => {
+          if (usedC.has(f.path)) return false;
+          const fm = _agendaFileMin(f.name);
+          if (fm === null || startMin === null) return false;
+          return fm >= startMin - 5 && fm <= (endMin ?? startMin + 90) + 5;
+        });
+        matchS.forEach(f => usedS.add(f.path));
+        matchC.forEach(f => usedC.add(f.path));
+
+        const allF = [...matchS, ...matchC];
+        items.push({
+          dateLabel, time: startMin !== null ? fmtHM(startMin) : '—',
+          name: mtg.subject, files: allF,
+          totalKb: _agendaTotalKb(allF), hasTranscript: allF.length > 0,
+        });
+      });
+
+      const unmatched = [
+        ...sessions.filter(f => !usedS.has(f.path)),
+        ...chunks.filter(f => !usedC.has(f.path)),
+      ];
+      if (unmatched.length) {
+        items.push({
+          dateLabel, time: '', name: 'Вне встреч', files: unmatched,
+          totalKb: _agendaTotalKb(unmatched), hasTranscript: true,
+        });
+      }
+    } else {
+      // Past date: group session files by cleaned name; fallback to chunks
+      const src = sessions.length ? sessions : chunks;
+      const byName = {};
+      src.forEach(f => {
+        const k = _agendaNorm(cleanTxName(f.name));
+        if (!byName[k]) byName[k] = { name: cleanTxName(f.name), files: [] };
+        byName[k].files.push(f);
+      });
+      Object.values(byName)
+        .sort((a, b) => (_agendaFileTime(a.files[0].name) < _agendaFileTime(b.files[0].name) ? -1 : 1))
+        .forEach(g => {
+          items.push({
+            dateLabel, time: _agendaFileTime(g.files[0].name), name: g.name,
+            files: g.files.sort((a, b) => (b.size_kb || 0) - (a.size_kb || 0)),
+            totalKb: _agendaTotalKb(g.files), hasTranscript: true,
+          });
+        });
+    }
+
+    allItems.push({ date, dateLabel, items });
+  });
+
+  return allItems;
+}
+
+function renderMeetingAgenda() {
+  const el = document.getElementById('tx-list');
+  if (!_allTx.length) {
+    el.innerHTML = '<div style="padding:20px;text-align:center;font-size:11px;color:var(--muted2)">Нет транскриптов</div>';
+    document.getElementById('tx-count').textContent = '0';
+    return;
+  }
+
+  const agenda = buildMeetingAgenda();
+  _agendaItems = [];
+  let html = '';
+
+  const collapsed = JSON.parse(localStorage.getItem('agendaCollapsed') || '{}');
+  const today = new Date().toISOString().slice(0, 10);
+
+  agenda.forEach(day => {
+    const isToday = day.date === today;
+    const isCollapsed = collapsed[day.date] !== undefined ? collapsed[day.date] : !isToday;
+    const withTx = day.items.filter(i => i.hasTranscript).length;
+    const sepCls = isCollapsed ? ' collapsed' : '';
+    const wrapCls = isCollapsed ? ' hidden' : '';
+    html += `<div class="agenda-date-sep${sepCls}" onclick="toggleDateGroup('${day.date}')">
+      <span>${esc(day.dateLabel)}</span>
+      <span class="agenda-date-right">
+        ${withTx ? `<span class="agenda-date-count">${withTx}</span>` : ''}
+        <span class="agenda-date-chevron">▾</span>
+      </span>
+    </div>
+    <div class="agenda-items-wrap${wrapCls}" id="dg-${day.date}">`;
+
+    day.items.forEach(item => {
+      const idx = _agendaItems.length;
+      _agendaItems.push(item);
+      const emptyCls = item.hasTranscript ? '' : ' agenda-item-empty';
+      const onclick  = item.hasTranscript ? `onclick="openAgendaItem(${idx})"` : '';
+      html += `<div class="agenda-item${emptyCls}" ${onclick}>
+        <div class="agenda-time">${esc(item.time)}</div>
+        <div class="agenda-body">
+          <div class="agenda-name" title="${esc(item.name)}">${esc(item.name)}</div>
+          <div class="agenda-meta${item.hasTranscript ? '' : ' agenda-meta-empty'}">
+            ${item.hasTranscript
+              ? `● ${item.files.length} файл${item.files.length > 1 ? 'а' : ''} · ${item.totalKb} KB`
+              : 'не записывалось'}
+          </div>
+        </div>
+      </div>`;
+    });
+
+    html += `</div>`;
+  });
+
+  document.getElementById('tx-count').textContent =
+    _agendaItems.filter(i => i.hasTranscript).length;
+  el.innerHTML = html;
+}
+
+function toggleDateGroup(dateKey) {
+  const wrap = document.getElementById('dg-' + dateKey);
+  const sep  = wrap?.previousElementSibling;
+  if (!wrap || !sep) return;
+  const nowCollapsed = wrap.classList.toggle('hidden');
+  sep.classList.toggle('collapsed', nowCollapsed);
+  const state = JSON.parse(localStorage.getItem('agendaCollapsed') || '{}');
+  state[dateKey] = nowCollapsed;
+  localStorage.setItem('agendaCollapsed', JSON.stringify(state));
+}
+
+async function openAgendaItem(idx) {
+  const item = _agendaItems[idx];
+  if (!item || !item.files.length) return;
+
+  document.querySelectorAll('.agenda-item').forEach(el => el.classList.remove('active'));
+  document.querySelectorAll('.agenda-item')[idx]?.classList.add('active');
+
+  // Prefer session files (already merged); within each type pick largest
+  const sessions = item.files.filter(f => f.path.replace(/\\/g, '/').includes('/sessions/'));
+  const best = (sessions.length ? sessions : item.files)
+    .sort((a, b) => (b.size_kb || 0) - (a.size_kb || 0))[0];
+
+  await openTranscript(best.path, item.name, best.date);
+}
+
+let _activeTxPath = null;
+async function openTranscript(idxOrPath, name, date) {
+  let path, txName, txDate;
+  if (typeof idxOrPath === 'number') {
+    const t = _allTx[idxOrPath];
+    if (!t) return;
+    path = t.path; txName = t.name; txDate = t.date;
+  } else {
+    path = idxOrPath; txName = name || path; txDate = date || '';
+  }
+  _activeTxPath = path;
+  document.querySelectorAll('.tx-item').forEach(el => el.classList.remove('active'));
+  const idx = _allTx.findIndex(t => t.path === path);
+  if (idx >= 0) document.getElementById('tx-item-' + idx)?.classList.add('active');
+
+  const hl = _highlightSpeaker;
+  const hlBadge = hl
+    ? `<span class="tx-hl-badge" onclick="clearSpeakerHighlight()" title="Снять фильтр">✕ ${esc(hl)}</span>`
+    : '';
+  document.getElementById('tx-toolbar').innerHTML =
+    `<strong>${esc(txName)}</strong><span style="color:var(--muted2)"> — ${esc(txDate)}</span> ${hlBadge}`;
+  document.getElementById('tx-viewer').innerHTML =
+    '<div style="padding:40px;text-align:center;color:var(--muted2);font-size:11px">Загрузка…</div>';
+  try {
+    const res  = await fetch(`${API}/transcript?path=${encodeURIComponent(path)}`);
+    const data = await res.json();
+    document.getElementById('tx-viewer').innerHTML = `<div class="md-body">${renderMarkdown(data.content, hl)}</div>`;
+    if (hl) {
+      const first = document.querySelector('#tx-viewer .spk-hl-header');
+      if (first) setTimeout(() => first.scrollIntoView({ behavior: 'smooth', block: 'center' }), 80);
+    }
+  } catch(e) {
+    document.getElementById('tx-viewer').innerHTML =
+      '<div style="padding:20px;color:var(--danger);font-size:11px">Ошибка загрузки</div>';
+  }
+}
+
+function clearSpeakerHighlight() {
+  _highlightSpeaker = null;
+  if (_activeTxPath) openTranscript(_activeTxPath);
+}
+
+async function viewSpeakerInTranscript(pendingIdx) {
+  const lbl = _pendingLabels[pendingIdx];
+  if (!lbl) return;
+  _highlightSpeaker = lbl.speaker_name;
+  _allTx = []; // force fresh fetch so newest transcript appears
+  switchTab('transcripts', document.getElementById('tab-transcripts-btn'));
+  await fetchAndRenderTxList();
+  const normPath = lbl.transcript_path.replace(/\\/g, '/');
+  const txIdx = _allTx.findIndex(t => t.path.replace(/\\/g, '/') === normPath);
+  if (txIdx >= 0) {
+    openTranscript(txIdx);
+  } else {
+    document.getElementById('tx-toolbar').innerHTML =
+      `<span style="color:var(--warn)">Файл не найден — возможно, ещё обрабатывается</span>`;
+  }
+}
+
+function renderMarkdown(md, highlightSpeaker) {
+  let html = '';
+  let curSpeaker = null;
+  (md || '').split('\n').forEach((line, lineIdx) => {
+    if (line.startsWith('# '))  { html += `<h1>${esc(line.slice(2))}</h1>`; return; }
+    if (line.startsWith('## ')) { html += `<h2>${esc(line.slice(3))}</h2>`; return; }
+    if (line.startsWith('- '))  { html += `<li>${esc(line.slice(2)).replace(/\*\*(.*?)\*\*/g,'<strong>$1</strong>')}</li>`; return; }
+    if (line.trim() === '')     { html += '<br>'; return; }
+    const spkMatch = line.match(/^\*\*\[(.+?)(?:\s*★)?\]\*\*(.*)/);
+    if (spkMatch) curSpeaker = spkMatch[1].replace(/\s*★$/, '').trim();
+    const isHl = !!(highlightSpeaker && curSpeaker === highlightSpeaker);
+    if (spkMatch) {
+      const rawName = spkMatch[1].replace(/\s*★$/, '').trim();
+      const isOwner = spkMatch[1].includes('★');
+      const rest = esc(spkMatch[2] || '');
+      const star = isOwner ? ' ★' : '';
+      const nameSpan = `<span class="spk-inline-btn" data-spkname="${esc(rawName)}" data-spkline="${lineIdx}">${esc(rawName)}${star}</span>`;
+      const rendered = `<strong>[${nameSpan}]</strong>${rest}`;
+      html += `<p class="${isHl ? 'spk-hl-header' : ''}">${rendered}</p>`;
+    } else {
+      const isHlLine = !!(highlightSpeaker && curSpeaker === highlightSpeaker);
+      const rendered = esc(line).replace(/\*\*(.*?)\*\*/g,'<strong>$1</strong>').replace(/_(.*?)_/g,'<em>$1</em>');
+      if (isHlLine) html += `<p class="spk-hl-text">${rendered}</p>`;
+      else          html += `<p>${rendered}</p>`;
+    }
+  });
+  return html;
+}
+
+// ── Enrollment ────────────────────────────────────────────────────────────
+let _enrollTimer = null;
+
+async function fetchEnrollStatus() {
+  try {
+    const d = await (await fetch(`${API}/enroll/status`)).json();
+    const nameEl    = document.getElementById('enroll-owner-name');
+    const countEl   = document.getElementById('enroll-samples-count');
+    const ownerRow  = document.getElementById('enroll-owner-row');
+    const nameInput = document.getElementById('enroll-name-input');
+    if (d.owner_name) {
+      nameEl.textContent  = d.owner_name;
+      countEl.textContent = d.owner_samples;
+      ownerRow.style.display = 'flex';
+      if (!nameInput.value) nameInput.value = d.owner_name;
+    }
+  } catch(e) {}
+}
+
+async function enrollStart() {
+  const name = document.getElementById('enroll-name-input').value.trim();
+  if (!name) { document.getElementById('enroll-msg').textContent = 'Введите имя'; return; }
+  const res  = await fetch(`${API}/enroll/start`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({name})
+  });
+  const data = await res.json();
+  if (data.error) { document.getElementById('enroll-msg').textContent = data.error; return; }
+
+  document.getElementById('enroll-record-btn').disabled = true;
+  document.getElementById('enroll-cancel-btn').style.display = 'inline-block';
+  document.getElementById('enroll-progress-wrap').style.display = 'block';
+  document.getElementById('enroll-msg').textContent = '';
+  document.getElementById('enroll-bar-fill').style.width = '0%';
+
+  _enrollTimer = setInterval(_enrollPoll, 250);
+}
+
+async function _enrollPoll() {
+  try {
+    const d = await (await fetch(`${API}/enroll/status`)).json();
+    const pct = Math.round(d.progress * 100);
+    document.getElementById('enroll-bar-fill').style.width = pct + '%';
+
+    if (d.status === 'recording') {
+      const secs = Math.ceil((1 - d.progress) * 20);
+      document.getElementById('enroll-countdown').textContent = `Запись… ${secs} сек`;
+    } else if (d.status === 'processing') {
+      document.getElementById('enroll-countdown').textContent = 'Обработка…';
+    } else if (d.status === 'done' || d.status === 'idle' || d.status === 'error') {
+      clearInterval(_enrollTimer); _enrollTimer = null;
+      document.getElementById('enroll-record-btn').disabled = false;
+      document.getElementById('enroll-cancel-btn').style.display = 'none';
+      document.getElementById('enroll-progress-wrap').style.display = 'none';
+      const msgEl = document.getElementById('enroll-msg');
+      if (d.status === 'done') {
+        msgEl.className = 'enroll-msg ok';
+        msgEl.textContent = `✓ ${d.message}`;
+        document.getElementById('enroll-samples-count').textContent = d.owner_samples;
+        document.getElementById('enroll-owner-name').textContent = d.owner_name || document.getElementById('enroll-name-input').value;
+        document.getElementById('enroll-owner-row').style.display = 'flex';
+      } else if (d.status === 'error') {
+        msgEl.className = 'enroll-msg err';
+        msgEl.textContent = 'Ошибка: ' + d.message;
+      }
+    }
+  } catch(e) {}
+}
+
+async function enrollCancel() {
+  await fetch(`${API}/enroll/cancel`, {method:'POST'});
+  clearInterval(_enrollTimer); _enrollTimer = null;
+  document.getElementById('enroll-record-btn').disabled = false;
+  document.getElementById('enroll-cancel-btn').style.display = 'none';
+  document.getElementById('enroll-progress-wrap').style.display = 'none';
+  document.getElementById('enroll-msg').textContent = '';
+}
+
+// ── Speakers ──────────────────────────────────────────────────────────────
+const SPK_COLORS = ['#7c6af7','#3de8a0','#f7c86c','#f76c6c','#a78cf7','#5de8c0','#f7a86c','#6cf7e8'];
+
+async function fetchSpeakers() {
+  try {
+    const speakers = await (await fetch(`${API}/speakers`)).json();
+    _speakers = speakers;
+    document.getElementById('spk-reg-head').textContent = `Зарегистрированные спикеры · ${speakers.length}`;
+    const el = document.getElementById('spk-list');
+    if (!speakers.length) {
+      el.innerHTML = '<div style="padding:16px 18px;font-size:11px;color:var(--muted2)">Нет спикеров в базе</div>';
+      return;
+    }
+    el.innerHTML = speakers.map((s, i) => {
+      const col = s.color || SPK_COLORS[i % SPK_COLORS.length];
+      return `<div class="spk-row" id="spk-${s.id}">
+        <div class="spk-row-dot" style="background:${esc(col)}"></div>
+        <div class="spk-row-name" id="spkn-${s.id}">${esc(s.name)}</div>
+        ${s.is_owner ? '<span class="spk-owner-tag">★ вы</span>' : ''}
+        ${s.auto_unknown ? '<span class="spk-meta-tag">неизвестный</span>' : ''}
+        ${s.auto_unknown && s.clip_path ? `<button class="spk-btn" title="Прослушать" onclick="spkPlayClip(event,'${s.clip_path.replace(/\\/g,'/')}','${s.id}')">▶</button>` : ''}
+        <div class="spk-actions">
+          <button class="spk-btn" onclick="startSpkRename('${s.id}','${esc(s.name)}')">✎ Переименовать</button>
+          ${!s.is_owner ? `<button class="spk-btn del" onclick="deleteSpk('${s.id}')">✕</button>` : ''}
+        </div>
+      </div>`;
+    }).join('');
+  } catch(e) {}
+}
+
+// ── Similar speakers ──────────────────────────────────────────────────────
+let _simAudio = null;
+
+async function fetchSimilarSpeakers() {
+  try {
+    const pairs = await (await fetch(`${API}/speakers/similar`)).json();
+    const section = document.getElementById('sim-section');
+    const grid    = document.getElementById('sim-grid');
+    const badge   = document.getElementById('sim-count-badge');
+    if (!pairs.length) { section.style.display = 'none'; return; }
+    section.style.display = '';
+    badge.textContent = pairs.length;
+    grid.innerHTML = pairs.map(p => {
+      const pct = Math.round((p.similarity - 0.5) / (0.65 - 0.5) * 100);
+      const colA = _speakerColor(p.id_a);
+      const colB = _speakerColor(p.id_b);
+      // Normalise Windows backslashes so they don't break inline JS string literals
+      const clipA = p.clip_a ? p.clip_a.replace(/\\/g, '/') : null;
+      const clipB = p.clip_b ? p.clip_b.replace(/\\/g, '/') : null;
+      return `<div class="sim-pair" id="spr-${p.id_a}-${p.id_b}">
+        <div class="sim-pair-score">
+          <span style="font-size:9px;letter-spacing:.1em;text-transform:uppercase">Сходство</span>
+          <div class="sim-score-bar"><div class="sim-score-fill" style="width:${pct}%"></div></div>
+          <span class="sim-score-val">${(p.similarity * 100).toFixed(0)}%</span>
+        </div>
+        <div class="sim-sides">
+          <div class="sim-side">
+            <div class="sim-side-name">
+              <div class="sim-side-dot" style="background:${colA}"></div>
+              ${esc(p.name_a)}
+            </div>
+            <div class="sim-side-meta">${p.samples_a} образц.</div>
+            ${clipA ? `<button class="sim-play-btn" id="simplay-${p.id_a}" onclick="simPlay(this,'${clipA}')">▶ Слушать</button>` : '<span style="font-size:10px;color:var(--muted2)">нет образца</span>'}
+          </div>
+          <div class="sim-side">
+            <div class="sim-side-name">
+              <div class="sim-side-dot" style="background:${colB}"></div>
+              ${esc(p.name_b)}
+            </div>
+            <div class="sim-side-meta">${p.samples_b} образц.</div>
+            ${clipB ? `<button class="sim-play-btn" id="simplay-${p.id_b}" onclick="simPlay(this,'${clipB}')">▶ Слушать</button>` : '<span style="font-size:10px;color:var(--muted2)">нет образца</span>'}
+          </div>
+        </div>
+        <div class="sim-actions">
+          <button class="sim-merge-btn" onclick="simMerge('${p.id_a}','${p.id_b}','${esc(p.name_a)}','${esc(p.name_b)}')">
+            Объединить → один человек
+          </button>
+          <button class="sim-diff-btn" onclick="simDismiss('${p.id_a}','${p.id_b}')">Разные</button>
+        </div>
+      </div>`;
+    }).join('');
+  } catch(e) {}
+}
+
+function _speakerColor(id) {
+  const s = _speakers.find(x => x.id === id);
+  return s?.color || '#888';
+}
+
+function simPlay(btn, clipPath) {
+  if (_simAudio && !_simAudio.paused) {
+    _simAudio.pause();
+    document.querySelectorAll('.sim-play-btn.playing').forEach(b => {
+      b.classList.remove('playing'); b.textContent = '▶ Слушать';
+    });
+    if (btn.classList.contains('was-playing')) {
+      btn.classList.remove('was-playing'); return;
+    }
+  }
+  _simAudio = new Audio(`${API}/speakers/clip?path=${encodeURIComponent(clipPath)}`);
+  _simAudio.play();
+  btn.classList.add('playing'); btn.textContent = '■ Стоп';
+  btn.classList.add('was-playing');
+  _simAudio.onended = () => { btn.classList.remove('playing','was-playing'); btn.textContent = '▶ Слушать'; };
+}
+
+async function simMerge(idA, idB, nameA, nameB) {
+  const card = document.getElementById(`spr-${idA}-${idB}`);
+  // Keep the one with more samples (backend also does this, but we pick keep_id here)
+  const sA = _speakers.find(s => s.id === idA)?.samples || 1;
+  const sB = _speakers.find(s => s.id === idB)?.samples || 1;
+  const [keepId, dropId, keepName] = sA >= sB ? [idA, idB, nameA] : [idB, idA, nameB];
+  if (!confirm(`Объединить в "${keepName}"? Второй спикер будет удалён.`)) return;
+  await fetch(`${API}/speakers/merge`, { method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ keep_id: keepId, drop_id: dropId }) });
+  card?.remove();
+  fetchSpeakers();
+  fetchSimilarSpeakers();
+}
+
+async function simDismiss(idA, idB) {
+  const card = document.getElementById(`spr-${idA}-${idB}`);
+  await fetch(`${API}/speakers/dismiss_pair`, { method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ id_a: idA, id_b: idB }) });
+  card?.remove();
+  const remaining = document.querySelectorAll('.sim-pair').length;
+  if (!remaining) document.getElementById('sim-section').style.display = 'none';
+  else document.getElementById('sim-count-badge').textContent = remaining;
+}
+
+function startSpkRename(id, name) {
+  const el = document.getElementById(`spkn-${id}`);
+  el.innerHTML = `<input class="inline-edit" id="ri-${id}" value="${esc(name)}"
+    onkeydown="if(event.key==='Enter')commitSpkRename('${id}');if(event.key==='Escape')fetchSpeakers()">
+    <button class="btn" style="padding:3px 8px;font-size:10px;margin-left:4px" onclick="commitSpkRename('${id}')">OK</button>`;
+  document.getElementById(`ri-${id}`)?.focus();
+}
+
+async function commitSpkRename(id) {
+  const input = document.getElementById(`ri-${id}`);
+  const name = input?.value?.trim();
+  if (!name) return;
+  await fetch(`${API}/speakers/${id}/rename`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name}) });
+  fetchSpeakers();
+}
+
+// ── Inline transcript speaker rename ──────────────────────────────────────
+let _spkPopTarget = null;
+
+function _meetingParticipants(txPath) {
+  // Find the agenda item that owns this transcript, get its meeting participants
+  const item = _agendaItems.find(i => i.files && i.files.some(f =>
+    f.path.replace(/\\/g,'/') === (txPath||'').replace(/\\/g,'/')
+  ));
+  const meetingName = item?.name;
+
+  // Find corresponding meeting in _todayMeetings to get attendees
+  const meeting = meetingName && (_todayMeetings||[]).find(m => m.subject === meetingName);
+  const parts = new Set();
+
+  const parseName = raw => {
+    // raw can be "First Last" or "first.last@domain.com"
+    if (!raw || !raw.trim()) return null;
+    const t = raw.trim();
+    if (t.includes('@')) {
+      // email: take part before @, replace dots/underscores with space, title-case
+      return t.split('@')[0].replace(/[._]/g, ' ')
+        .replace(/\b\w/g, c => c.toUpperCase());
+    }
+    return t;
+  };
+
+  if (meeting) {
+    const raw = [meeting.organizer, meeting.attendees].join(';');
+    raw.split(/[;,]/).map(s => parseName(s)).filter(Boolean).forEach(n => parts.add(n));
+  }
+  // Also add already-named (non-auto) speakers as quick-pick
+  (_speakers||[]).filter(s => !s.auto_unknown && !s.name.startsWith('Speaker_'))
+    .forEach(s => parts.add(s.name));
+
+  return [...parts];
+}
+
+function spkPopOpen(event, spkName, lineIdx) {
+  if (!_speakers.length) { fetchSpeakers().then(() => spkPopOpen(event, spkName, lineIdx)); return; }
+  const spk = _speakers.find(s => s.name === spkName);
+  const pop = document.getElementById('spk-rename-pop');
+  _spkPopTarget = { id: spk?.id, name: spkName, lineIdx: lineIdx ?? -1 };
+  const input = document.getElementById('spk-rename-input');
+  const hint  = document.getElementById('spk-rename-hint');
+  input.value = spkName;
+  hint.textContent = spk ? '' : 'Спикер не найден в реестре — возможно, удалён';
+  hint.style.color = spk ? '' : 'var(--warn)';
+
+  // Participant chips
+  const pWrap = document.getElementById('spk-rename-participants');
+  const participants = _meetingParticipants(_activeTxPath).filter(n => n !== spkName);
+  if (participants.length) {
+    pWrap.style.display = 'block';
+    pWrap.innerHTML = `<div class="pop-participants-label">Участники встречи</div>
+      <div class="pop-chips">${participants.map(n =>
+        `<span class="pop-chip" onclick="spkPopPickName(${JSON.stringify(n)})">${esc(n)}</span>`
+      ).join('')}</div>`;
+  } else {
+    pWrap.style.display = 'none';
+    pWrap.innerHTML = '';
+  }
+
+  // Position below the clicked element, keep within viewport
+  const r = event.target.getBoundingClientRect();
+  pop.style.display = 'block';
+  const pw = pop.offsetWidth || 260;
+  let left = r.left;
+  if (left + pw > window.innerWidth - 8) left = window.innerWidth - pw - 8;
+  // Keep within bottom of viewport
+  const ph = pop.offsetHeight || 180;
+  const top = r.bottom + 6 + ph > window.innerHeight - 8
+    ? Math.max(8, r.top - ph - 6) : r.bottom + 6;
+  pop.style.left = left + 'px';
+  pop.style.top  = top + 'px';
+  input.focus(); input.select();
+}
+
+function spkPopPickName(name) {
+  document.getElementById('spk-rename-input').value = name;
+  document.getElementById('spk-rename-input').focus();
+}
+
+async function spkPopCommit(mode) {
+  const name = document.getElementById('spk-rename-input').value.trim();
+  if (!name || !_spkPopTarget) { spkPopClose(); return; }
+
+  if (mode === 'block') {
+    if (_spkPopTarget.lineIdx < 0 || !_activeTxPath) { spkPopClose(); return; }
+    await fetch(`${API}/transcript/relabel_block`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: _activeTxPath, line_no: _spkPopTarget.lineIdx, new_speaker: name })
+    });
+  } else {
+    if (!_spkPopTarget.id) { spkPopClose(); return; }
+    await fetch(`${API}/speakers/${_spkPopTarget.id}/rename`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name })
+    });
+    fetchSpeakers();
+  }
+
+  spkPopClose();
+  if (_activeTxPath) openTranscript(_activeTxPath);
+}
+
+function spkPopClose() {
+  document.getElementById('spk-rename-pop').style.display = 'none';
+  _spkPopTarget = null;
+}
+
+async function deleteSpk(id) {
+  if (!confirm('Удалить спикера? Это не повлияет на уже сохранённые транскрипты.')) return;
+  await fetch(`${API}/speakers/${id}`, { method: 'DELETE' });
+  fetchSpeakers();
+}
+
+let _spkAudio = null;
+function spkPlayClip(event, clipPath, spkId) {
+  event.stopPropagation();
+  const btn = event.currentTarget;
+  if (_spkAudio && !_spkAudio.paused) {
+    _spkAudio.pause();
+    document.querySelectorAll('.spk-btn[data-playing]').forEach(b => { b.textContent = '▶'; delete b.dataset.playing; });
+    if (_spkAudio._spkId === spkId) { _spkAudio = null; return; }
+  }
+  _spkAudio = new Audio(`${API}/speaker_clip/${clipPath}`);
+  _spkAudio._spkId = spkId;
+  btn.textContent = '◼';
+  btn.dataset.playing = '1';
+  _spkAudio.play();
+  _spkAudio.onended = () => { btn.textContent = '▶'; delete btn.dataset.playing; };
+}
+
+// ── Pending labels ────────────────────────────────────────────────────────
+async function fetchPendingLabels() {
+  try {
+    const labels = await (await fetch(`${API}/pending_labels`)).json();
+    _pendingLabels = labels;
+    const count = labels.length;
+
+    const badge = document.getElementById('pending-count-badge');
+    const lbl   = document.getElementById('pending-count-lbl');
+    badge.style.display = count ? '' : 'none';
+    badge.textContent   = count;
+    lbl.textContent     = count;
+
+    renderPendingSection(labels);
+
+    if (count > 0) showLabelBanner(0);
+    else document.getElementById('label-banner').style.display = 'none';
+  } catch(e) {}
+}
+
+function renderPendingSection(labels) {
+  const el = document.getElementById('pending-grid');
+  if (!labels.length) {
+    el.innerHTML = '<div class="section-empty">Нет спикеров, требующих имени</div>';
+    return;
+  }
+  const knownSpks = _speakers.filter(s => !s.auto_unknown);
+  el.innerHTML = labels.map((lbl, i) => {
+    const chips = knownSpks.filter(s => s.name !== lbl.speaker_name).map(s =>
+      `<span class="pop-chip" style="cursor:pointer" onclick="piPickSpeaker(${i},${JSON.stringify(s.id)},${JSON.stringify(s.name)})">${esc(s.name)}</span>`
+    ).join('');
+    return `
+    <div class="pending-card">
+      <div class="pending-card-meta">${esc(lbl.speaker_name)} · ${nowHM()}</div>
+      ${lbl.audio_clip_path ? `<div class="pending-card-audio"><audio controls src="${API}/speaker_clip/${lbl.audio_clip_path.replace(/\\/g,'/')}"></audio></div>` : ''}
+      <div class="pending-samples">
+        ${(lbl.sample_lines || []).map(l => `<div class="pending-sample">"${esc(l)}"</div>`).join('')}
+      </div>
+      ${chips ? `<div class="pop-chips" style="margin-bottom:6px">${chips}</div>` : ''}
+      <div class="pending-row">
+        <input type="text" class="pending-input" id="pi-${i}" placeholder="Введите имя…"
+          onkeydown="if(event.key==='Enter')submitPendingLabel(${i},'${esc(lbl.request_id)}')"
+          oninput="delete this.dataset.targetId">
+        <button class="state-btn primary" style="padding:7px 16px" onclick="submitPendingLabel(${i},'${esc(lbl.request_id)}')">OK</button>
+        <button class="state-btn" style="padding:7px 12px;color:var(--muted2)" onclick="dismissPendingLabel('${esc(lbl.request_id)}')">—</button>
+      </div>
+      <div style="margin-top:8px">
+        <button class="btn" style="font-size:9px;padding:3px 10px;color:var(--accent);border-color:rgba(124,106,247,.3)"
+          onclick="viewSpeakerInTranscript(${i})">↗ Смотреть в транскрипте</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function piPickSpeaker(idx, id, name) {
+  const input = document.getElementById(`pi-${idx}`);
+  input.value = name;
+  input.dataset.targetId = id;
+  input.focus();
+}
+
+async function submitPendingLabel(idx, requestId) {
+  const input = document.getElementById(`pi-${idx}`);
+  const name  = input?.value?.trim();
+  if (!name) return;
+  const body = {request_id: requestId, name};
+  const targetId = input?.dataset?.targetId;
+  if (targetId) body.target_speaker_id = targetId;
+  await fetch(`${API}/label_speaker`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
+  fetchPendingLabels();
+  fetchSpeakers();
+}
+
+async function dismissPendingLabel(requestId) {
+  await fetch(`${API}/label_speaker`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({request_id:requestId,dismiss:true}) });
+  fetchPendingLabels();
+}
+
+// ── Label banner (floating, monitor view) ─────────────────────────────────
+function showLabelBanner(idx) {
+  _curLabelIdx = Math.min(idx, _pendingLabels.length - 1);
+  const lbl = _pendingLabels[_curLabelIdx];
+  if (!lbl) { document.getElementById('label-banner').style.display = 'none'; return; }
+
+  document.getElementById('lb-speaker-name').textContent = lbl.speaker_name;
+  const sampleEl = document.getElementById('lb-sample-text');
+  sampleEl.innerHTML = lbl.sample_lines?.length
+    ? lbl.sample_lines.map(l => `"${esc(l)}"`).join('<br>')
+    : '<em>нет реплик</em>';
+
+  const audioWrap = document.getElementById('lb-audio-wrap');
+  const audioEl   = document.getElementById('lb-audio');
+  if (lbl.audio_clip_path) {
+    audioEl.src = `${API}/speaker_clip/${lbl.audio_clip_path.replace(/\\/g, '/')}`;
+    audioWrap.style.display = '';
+  } else {
+    audioWrap.style.display = 'none';
+  }
+
+  document.getElementById('lb-counter').textContent = _pendingLabels.length > 1 ? `${_curLabelIdx+1} / ${_pendingLabels.length}` : '';
+  document.getElementById('lb-more').textContent    = _pendingLabels.length > 1 ? `Ещё ${_pendingLabels.length-1} незнакомых спикера` : '';
+  document.getElementById('lb-name-input').value = '';
+  _bannerTargetId = null;
+
+  // Quick-pick chips for known speakers
+  const chipsEl = document.getElementById('lb-speaker-chips');
+  const knownSpks = _speakers.filter(s => !s.auto_unknown && s.name !== lbl.speaker_name);
+  if (knownSpks.length) {
+    chipsEl.style.display = 'block';
+    chipsEl.innerHTML = knownSpks.map(s =>
+      `<span class="pop-chip" style="cursor:pointer" onclick="lbPickSpeaker(${JSON.stringify(s.id)},${JSON.stringify(s.name)})">${esc(s.name)}</span>`
+    ).join('');
+  } else {
+    chipsEl.style.display = 'none';
+    chipsEl.innerHTML = '';
+  }
+
+  document.getElementById('label-banner').style.display = '';
+  setTimeout(() => document.getElementById('lb-name-input').focus(), 100);
+}
+
+function lbPickSpeaker(id, name) {
+  document.getElementById('lb-name-input').value = name;
+  _bannerTargetId = id;
+  document.getElementById('lb-name-input').focus();
+}
+
+async function submitLabel() {
+  const name = document.getElementById('lb-name-input').value.trim();
+  if (!name) return;
+  const lbl = _pendingLabels[_curLabelIdx];
+  if (!lbl) return;
+  const body = {request_id: lbl.request_id, name};
+  if (_bannerTargetId) body.target_speaker_id = _bannerTargetId;
+  await fetch(`${API}/label_speaker`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
+  _pendingLabels.splice(_curLabelIdx, 1);
+  _pendingLabels.length > 0 ? showLabelBanner(0) : (document.getElementById('label-banner').style.display = 'none');
+  fetchSpeakers();
+  renderPendingSection(_pendingLabels);
+}
+
+async function dismissLabel() {
+  const lbl = _pendingLabels[_curLabelIdx];
+  if (!lbl) return;
+  await fetch(`${API}/label_speaker`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({request_id:lbl.request_id,dismiss:true}) });
+  _pendingLabels.splice(_curLabelIdx, 1);
+  _pendingLabels.length > 0 ? showLabelBanner(0) : (document.getElementById('label-banner').style.display = 'none');
+  renderPendingSection(_pendingLabels);
+}
+
+// ── Active meetings ───────────────────────────────────────────────────────
+async function fetchActiveMeetings() {
+  try {
+    const res = await (await fetch(`${API}/active_meetings`)).json();
+    _activeMeetings = res.meetings || [];
+    _forcedMeeting  = res.forced   || null;
+    if (_activeMeetings.length > 1) renderMeetingPicker();
+  } catch(e) {}
+}
+
+function renderMeetingPicker() {
+  const el = document.getElementById('cal-content');
+  if (_activeMeetings.length <= 1) return;
+  const forced = _forcedMeeting;
+  const cards = _activeMeetings.map((m, i) => {
+    const sel = forced ? (forced.subject===m.subject && forced.start===m.start) : i===0;
+    return `<div class="meeting-pick-card ${sel?'selected':''}" onclick="selectMeeting(${i})">
+      ${sel ? '<span class="meeting-pick-badge">'+(forced?'✓ выбрано':'✓ авто')+'</span>' : ''}
+      <div class="meeting-pick-subject">${esc(m.subject)}</div>
+      <div class="meeting-pick-time">
+        ${fmtTime(m.start)} → ${fmtTime(m.end)}
+        ${m.organizer ? '<br>👤 ' + esc(m.organizer) : ''}
+      </div>
+    </div>`;
+  }).join('');
+  el.innerHTML = `
+    <div class="meeting-warn">⚠ ${_activeMeetings.length} встречи одновременно</div>
+    <div class="meeting-picker">${cards}</div>
+    ${forced ? '<div class="meeting-clear" onclick="clearMeetingSelection()">сбросить выбор →</div>' : ''}`;
+}
+
+async function selectMeeting(idx) {
+  _forcedMeeting = _activeMeetings[idx];
+  renderMeetingPicker();
+  await fetch(`${API}/select_meeting`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({event:_forcedMeeting}) });
+}
+
+async function clearMeetingSelection() {
+  _forcedMeeting = null;
+  renderMeetingPicker();
+  await fetch(`${API}/select_meeting`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({event:null}) });
+}
+
+// ── Diagnostics ───────────────────────────────────────────────────────────
+let _diagLastFailed = [];
+
+async function fetchDiagnostics() {
+  const body = document.getElementById('diag-body');
+  const btn  = document.getElementById('diag-btn');
+  body.innerHTML = '<div class="diag-empty"><span class="diag-spinner"></span> Проверка…</div>';
+  if (btn) btn.disabled = true;
+  try {
+    const d = await (await fetch(`${API}/diagnostics`)).json();
+    const rows = (d.checks || []).map(c => `
+      <div class="diag-row">
+        <div class="diag-dot ${c.status || 'unknown'}"></div>
+        <div class="diag-name">${esc(c.name)}</div>
+        <div class="diag-detail">${esc(c.detail || '—')}</div>
+      </div>`).join('');
+    const ts = d.timestamp ? `<div class="diag-ts">проверено ${d.timestamp.replace('T',' ')}</div>` : '';
+    _diagLastFailed = (d.checks || []).filter(c => c.status === 'error' || c.status === 'warn');
+    const fixBtn = _diagLastFailed.length > 0
+      ? `<button class="btn" id="diag-fix-btn" onclick="runDiagFix()"
+           style="margin-top:10px;font-size:10px;padding:3px 12px">Починить с Claude ›</button>`
+      : '';
+    body.innerHTML = `<div class="diag-rows">${rows}</div>${fixBtn}${ts}`;
+    const card = document.getElementById('card-diag');
+    if (card && card.classList.contains('collapsed')) toggleCard('card-diag');
+    // Auto-trigger fix for hard errors (once per 5 min per session)
+    const hasErrors = (d.checks || []).some(c => c.status === 'error');
+    if (hasErrors) {
+      const lastFix = parseInt(sessionStorage.getItem('vl-last-autofix') || '0');
+      if (Date.now() - lastFix > 5 * 60 * 1000) {
+        sessionStorage.setItem('vl-last-autofix', String(Date.now()));
+        runDiagFix(true);
+      }
+    }
+  } catch(e) {
+    body.innerHTML = `<div class="diag-empty" style="color:var(--danger)">Ошибка: ${esc(String(e))}</div>`;
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function runDiagFix(auto) {
+  const btn = document.getElementById('diag-fix-btn');
+  if (btn) btn.disabled = true;
+  try {
+    const res = await (await fetch(`${API}/diagnostics/fix`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ checks: _diagLastFailed }),
+    })).json();
+    if (btn) {
+      btn.textContent = res.ok ? 'Claude запущен ✓' : ('Ошибка: ' + (res.error || '?'));
+      btn.style.color = res.ok ? 'var(--green)' : 'var(--danger)';
+      if (res.ok) setTimeout(() => { if (btn) { btn.textContent = 'Починить с Claude ›'; btn.style.color = ''; btn.disabled = false; } }, 4000);
+    }
+  } catch(e) {
+    if (btn) { btn.disabled = false; }
+  }
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────
+// Settings and diagnostics cards collapsed by default unless user has explicitly opened them
+try {
+  if (localStorage.getItem('vl-card-card-settings') !== '0') {
+    localStorage.setItem('vl-card-card-settings', '1');
+  }
+  if (localStorage.getItem('vl-card-card-diag') !== '0') {
+    localStorage.setItem('vl-card-card-diag', '1');
+  }
+} catch(e) {}
+
+initCards();
+fetchConfig();
+fetchState();
+fetchDiagnostics();
+fetchTranscripts();
+fetchSpeakers();
+fetchPendingLabels();
+fetchActiveMeetings();
+fetchTodayMeetings();
+
+setInterval(fetchState,          3000);
+setInterval(fetchPendingLabels,  5000);
+setInterval(fetchTranscripts,   15000);
+setInterval(fetchActiveMeetings,15000);
+setInterval(fetchTodayMeetings, 60000);
+setInterval(fetchSpeakers,      20000);
+setInterval(updateProgress,      1000);
+
+// Delegated click for inline speaker rename
+document.getElementById('tx-viewer').addEventListener('click', e => {
+  const btn = e.target.closest('.spk-inline-btn');
+  if (btn) { e.stopPropagation(); spkPopOpen(e, btn.dataset.spkname, parseInt(btn.dataset.spkline)); }
+});
+// Close popover on outside click
+document.addEventListener('click', e => {
+  const pop = document.getElementById('spk-rename-pop');
+  if (pop.style.display !== 'none' && !pop.contains(e.target)) spkPopClose();
+});
+</script>
+</body>
+</html>

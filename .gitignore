@@ -1,0 +1,28 @@
+# ── Secrets & credentials ─────────────────────────────────────────────────
+config.json
+credentials.json
+token.json
+
+# ── Personal data ──────────────────────────────────────────────────────────
+speakers/
+transcripts/
+recordings/
+training_data/
+logs/
+
+# ── Runtime artifacts ─────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.wav
+python_path.txt
+
+# ── Internal dev notes ────────────────────────────────────────────────────
+CONTEXT.md
+REDESIGN_CONTEXT.md
+
+# ── Claude Code internal ──────────────────────────────────────────────────
+.claude/
+
+# ── Stale root copy of dashboard ─────────────────────────────────────────
+/index.html
