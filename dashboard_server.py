@@ -1163,39 +1163,6 @@ def get_diagnostics():
 
     _check("diarization", "Диаризация", chk_diarization)
 
-    # ── Google Drive ──────────────────────────────────────────────────────────
-    def chk_gdrive():
-        cfg = json.loads(Path(CONFIG_FILE).read_text()) if Path(CONFIG_FILE).exists() else {}
-        if not cfg.get("gdrive_folder_id", ""):
-            return "warn", "gdrive_folder_id не настроен"
-        creds = Path("credentials.json")
-        token = Path("token.json")
-        if not creds.exists():
-            return "error", "credentials.json не найден"
-        if not token.exists():
-            return "warn", "token.json не найден — требуется авторизация"
-        drive_files = Path("logs/drive_files.json")
-        if not drive_files.exists():
-            return "warn", "нет загруженных файлов (drive_files.json отсутствует)"
-        files = json.loads(drive_files.read_text(encoding="utf-8"))
-        count = len(files)
-        if count == 0:
-            return "warn", "файлы не загружались"
-        stats_path = Path("logs/pipeline_stats.json")
-        last_ts = None
-        if stats_path.exists():
-            stats = json.loads(stats_path.read_text(encoding="utf-8"))
-            for c in reversed(stats.get("recent", [])):
-                if c.get("upload_s", 0) > 0:
-                    last_ts = c.get("started_at", "")[:16]
-                    break
-        detail = f"{count} файлов на Drive"
-        if last_ts:
-            detail += f" · посл. загрузка {last_ts}"
-        return "ok", detail
-
-    _check("gdrive", "Google Drive", chk_gdrive)
-
     # ── Outlook Calendar ──────────────────────────────────────────────────────
     def chk_calendar():
         today_str = datetime.date.today().strftime("%Y-%m-%d")

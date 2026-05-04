@@ -37,16 +37,6 @@ except ImportError:
 
 TODAY_MEETINGS_FILE = "logs/today_meetings.json"
 
-try:
-    from google.oauth2.credentials import Credentials
-    from google_auth_oauthlib.flow import InstalledAppFlow
-    from google.auth.transport.requests import Request
-    from googleapiclient.discovery import build
-    from googleapiclient.http import MediaFileUpload
-    GDRIVE_AVAILABLE = True
-except ImportError:
-    GDRIVE_AVAILABLE = False
-
 # ── Logging ────────────────────────────────────────────────────────────────
 log = logging.getLogger("voice-logger")
 if not log.handlers:
@@ -70,9 +60,6 @@ DEFAULT_CONFIG = {
     "silence_min_seconds": 3,          # skip chunk if mostly silent
     "transcripts_dir": "transcripts",
     "recordings_dir": "recordings",
-    "gdrive_folder_id": "",            # Google Drive folder ID for NotebookLM
-    "gdrive_credentials": "credentials.json",
-    "gdrive_token": "token.json",
     "keep_audio": False,               # delete .wav after transcription
     "status_file": "logs/status.json", # live status for the dashboard UI
     "forced_meeting_file": "logs/forced_meeting.json",  # user-selected meeting override
@@ -391,108 +378,6 @@ def get_outlook_event_at(dt: datetime.datetime) -> dict | None:
                 }
     except Exception as e:
         log.warning(f"Outlook error: {e}")
-    return None
-
-
-# ── Google Drive upload ────────────────────────────────────────────────────
-_gdrive_service = None
-_gdrive_disabled = False   # set True after unrecoverable auth failure
-
-def _get_gdrive_service():
-    global _gdrive_service, _gdrive_disabled
-    if _gdrive_disabled:
-        return None
-    if _gdrive_service:
-        return _gdrive_service
-    if not GDRIVE_AVAILABLE:
-        return None
-    SCOPES = ["https://www.googleapis.com/auth/drive.file"]
-    creds = None
-    token_path = cfg["gdrive_token"]
-    creds_path = cfg["gdrive_credentials"]
-    if Path(token_path).exists():
-        creds = Credentials.from_authorized_user_file(token_path, SCOPES)
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            try:
-                creds.refresh(Request())
-            except Exception as e:
-                log.error(f"Google Drive token refresh failed: {e}")
-                # Token is revoked — delete it so user can re-auth via check_gdrive.py
-                Path(token_path).unlink(missing_ok=True)
-                _gdrive_disabled = True
-                msg = "Google Drive: токен отозван. Запустите python check_gdrive.py для повторной авторизации."
-                log.warning(msg)
-                if msg not in _status.get("errors", []):
-                    _status.setdefault("errors", []).append(msg)
-                return None
-        elif Path(creds_path).exists():
-            flow = InstalledAppFlow.from_client_secrets_file(creds_path, SCOPES)
-            creds = flow.run_local_server(port=0)
-        else:
-            log.warning("Google Drive credentials not found – skipping upload.")
-            return None
-        with open(token_path, "w") as t:
-            t.write(creds.to_json())
-    _gdrive_service = build("drive", "v3", credentials=creds)
-    return _gdrive_service
-
-
-def upload_to_gdrive(
-    file_path: Path,
-    folder_id: str,
-    file_id: str = None,
-    as_gdoc: bool = False,
-) -> str | None:
-    """
-    Upload or update a file on Google Drive.
-    - file_id=None  → create new file; returns new file ID.
-    - file_id=<id>  → overwrite existing file; returns same ID.
-    - as_gdoc=True  → convert to Google Docs format (required for NotebookLM).
-    """
-    global _gdrive_service
-    svc = _get_gdrive_service()
-    if not svc or not folder_id:
-        return None
-
-    _TRANSIENT = ("ssl", "eof", "timeout", "connection", "reset", "broken pipe", "remote end")
-
-    last_err = None
-    for attempt in range(3):
-        try:
-            update_status(state="uploading")
-            media = MediaFileUpload(str(file_path), mimetype="text/plain")
-            if file_id:
-                svc.files().update(fileId=file_id, media_body=media).execute()
-                log.info(f"Updated {file_path.name} → Drive id={file_id}")
-            else:
-                meta = {"name": file_path.stem, "parents": [folder_id]}
-                if as_gdoc:
-                    meta["mimeType"] = "application/vnd.google-apps.document"
-                result = svc.files().create(body=meta, media_body=media, fields="id").execute()
-                file_id = result.get("id")
-                log.info(f"Uploaded {file_path.name} → Drive id={file_id}")
-            _status["errors"] = [e for e in _status.get("errors", [])
-                                  if not any(s in e.lower() for s in _TRANSIENT)]
-            return file_id
-        except Exception as e:
-            last_err = e
-            is_transient = any(s in str(e).lower() for s in _TRANSIENT)
-            if is_transient and attempt < 2:
-                log.warning(f"Drive upload transient error (attempt {attempt+1}/3): {e} — retrying…")
-                _gdrive_service = None
-                svc = _get_gdrive_service()
-                if not svc:
-                    break
-                time.sleep(2 ** attempt)
-                continue
-            break
-
-    log.error(f"Drive upload failed: {last_err}")
-    err_str = str(last_err)
-    if err_str not in _status.get("errors", []):
-        _status.setdefault("errors", []).append(err_str)
-    _gdrive_service = None
     return None
 
 
@@ -1019,10 +904,6 @@ def process_chunk(wav_path: Path, started_at: datetime.datetime, ended_at: datet
                 _update_training_speakers(answers)
             update_status(pending_labels=len(labeler_mod.get_pending()))
 
-        # ── Step 6: Upload to Google Drive ─────────────────────────────────
-        if cfg.get("gdrive_folder_id"):
-            upload_to_gdrive(md_path, cfg["gdrive_folder_id"])
-
         if not cfg.get("keep_audio"):
             wav_path.unlink(missing_ok=True)
 
@@ -1151,7 +1032,7 @@ def main():
     _requeue_orphaned_wavs()
 
     # Start session merger background thread
-    _merger = merger_mod.SessionMerger(cfg, upload_fn=upload_to_gdrive)
+    _merger = merger_mod.SessionMerger(cfg)
     _merger.start()
 
     watcher = threading.Thread(target=_whisper_reload_watcher, daemon=True)

@@ -9,8 +9,7 @@ Windows background service that continuously records meeting audio, transcribes 
 - **Speaker diarization** — pyannote 3.1, automatic unknown speaker registration
 - **Voice enrollment** — enroll your own voice, get starred ★ in transcripts
 - **Outlook calendar integration** — groups chunks into sessions by meeting title
-- **Google Drive sync** — uploads as Google Docs for NotebookLM
-- **Obsidian integration** — optional sync via Local REST API plugin
+- **Obsidian sync** — auto-uploads sessions via Local REST API plugin
 - **Web dashboard** — live status, speaker management, transcript browser, system diagnostics
 
 ![Dashboard](dashboard/preview.png)
@@ -37,15 +36,10 @@ python setup.py
 cp config.example.json config.json
 # Edit config.json — see "Configuration" below
 
-# 4. Set up Google Drive (optional)
-#    Download credentials.json from Google Cloud Console
-#    Enable Drive API, create OAuth 2.0 Desktop credentials
-python check_gdrive.py
-
-# 5. Enroll your voice (optional but recommended)
+# 4. Enroll your voice (optional but recommended)
 python enroll_me.py
 
-# 6. Start
+# 5. Start
 start.bat
 ```
 
@@ -58,7 +52,6 @@ Copy `config.example.json` → `config.json` and set:
 | Key | Description |
 |-----|-------------|
 | `hf_token` | HuggingFace token — needed for pyannote diarization models |
-| `gdrive_folder_id` | Google Drive folder ID for transcript upload |
 | `whisper_model` | `tiny` / `base` / `small` / `medium` / `large` |
 | `language` | `ru`, `en`, etc. — or `null` for auto-detect |
 | `chunk_seconds` | Recording chunk length in seconds (default 300) |
@@ -68,6 +61,8 @@ Copy `config.example.json` → `config.json` and set:
 HuggingFace token: https://huggingface.co/settings/tokens  
 You must also accept the pyannote model license at:  
 https://huggingface.co/pyannote/speaker-diarization-3.1
+
+For Obsidian sync, install the [Local REST API](https://github.com/coddingtonbear/obsidian-local-rest-api) plugin and copy the API key to `config.json`.
 
 ## Running
 

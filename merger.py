@@ -17,12 +17,7 @@ After merging, each session is appended to a *permanent* file keyed by the
 Outlook category (calendar colour) of the event:
   transcripts/permanent/<Category>.txt
 
-These permanent files are uploaded to Google Drive as Google Docs (so
-NotebookLM can index them). The user adds each permanent file to NotebookLM
-once; subsequent meetings automatically update the same document.
-
-Drive file IDs are persisted in logs/drive_files.json so we always overwrite
-the same Google Doc rather than creating new files.
+Permanent files are synced to Obsidian via the Local REST API plugin.
 """
 
 import json
@@ -42,7 +37,6 @@ SILENCE_GAP_MINUTES   = 1       # gap threshold for fallback strategy
 CHECK_INTERVAL_SEC    = 30      # how often to check for completed sessions
 SESSIONS_DIR          = "transcripts/sessions"
 PERMANENT_DIR         = "transcripts/permanent"
-DRIVE_FILES_LOG       = "logs/drive_files.json"
 CATEGORY_SESSIONS_LOG = "logs/category_sessions.json"
 CONFLICTS_LOG         = "logs/session_conflicts.json"
 
@@ -443,9 +437,8 @@ class SessionMerger:
     Also maintains permanent per-category files for NotebookLM.
     """
 
-    def __init__(self, cfg: dict, upload_fn=None):
-        self.cfg       = cfg
-        self.upload_fn = upload_fn   # upload_to_gdrive(path, folder_id, file_id, as_gdoc)
+    def __init__(self, cfg: dict):
+        self.cfg   = cfg
         self._stop     = threading.Event()
         self._thread   = None
         self._merged: set[str] = set()
@@ -478,23 +471,6 @@ class SessionMerger:
         p = self._merged_log_path()
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(json.dumps(list(self._merged)))
-
-    # ── Drive file ID tracking ─────────────────────────────────────────────
-
-    def _load_drive_files(self) -> dict:
-        """Load {category: drive_file_id} mapping."""
-        p = Path(DRIVE_FILES_LOG)
-        if p.exists():
-            try:
-                return json.loads(p.read_text(encoding="utf-8"))
-            except Exception:
-                return {}
-        return {}
-
-    def _save_drive_files(self, data: dict):
-        p = Path(DRIVE_FILES_LOG)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
     # ── Conflict tracking ──────────────────────────────────────────────────
 
@@ -603,27 +579,6 @@ class SessionMerger:
         )
         return out_path
 
-    def _upload_permanent(self, path: Path, category: str):
-        """Upload (create or overwrite) a permanent file to Google Drive as a Google Doc."""
-        folder_id = self.cfg.get("gdrive_folder_id", "")
-        if not self.upload_fn or not folder_id:
-            return
-        drive_files = self._load_drive_files()
-        existing_id = drive_files.get(category)
-        try:
-            new_id = self.upload_fn(
-                path, folder_id,
-                file_id=existing_id,
-                as_gdoc=True,
-            )
-            if new_id:
-                drive_files[category] = new_id
-                self._save_drive_files(drive_files)
-                action = "updated" if existing_id else "created"
-                log.info(f"Permanent '{category}' {action} on Drive (id={new_id})")
-        except Exception as e:
-            log.warning(f"Permanent file upload failed for '{category}': {e}")
-
     def _register_session(
         self,
         out_path: Path,
@@ -700,9 +655,7 @@ class SessionMerger:
         self._save_cat_sessions(cat_sessions)
 
         for cat in cats_to_rebuild:
-            perm = self._rebuild_permanent_file(cat)
-            if perm:
-                self._upload_permanent(perm, cat)
+            self._rebuild_permanent_file(cat)
 
         log.info("Backfill complete.")
 
@@ -828,9 +781,7 @@ class SessionMerger:
         # Register in category log and rebuild permanent file
         is_new = self._register_session(out_path, title, chunks[0][0], category)
         if is_new:
-            perm_path = self._rebuild_permanent_file(category)
-            if perm_path:
-                self._upload_permanent(perm_path, category)
+            self._rebuild_permanent_file(category)
 
         # Upload session to Obsidian (one meeting = one file)
         obs_url = self.cfg.get("obsidian_url", "")
