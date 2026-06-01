@@ -288,6 +288,75 @@ def recorder_stop():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
+def _do_cleanup() -> dict:
+    """Clean up ghost speakers, amplify clips, reset stuck pipeline counters."""
+    result = {}
+    try:
+        from speakers import cleanup_speakers_without_clips
+        result["speakers_removed"] = cleanup_speakers_without_clips()
+    except Exception as e:
+        result["speakers_error"] = str(e)
+
+    try:
+        from labeler import amplify_existing_clips
+        result["clips_amplified"] = amplify_existing_clips()
+    except Exception as e:
+        result["clips_error"] = str(e)
+
+    try:
+        stats_path = Path("logs/pipeline_stats.json")
+        if stats_path.exists():
+            stats = json.loads(stats_path.read_text(encoding="utf-8"))
+            if stats.get("active_processing", 0) > 0:
+                stats["active_processing"] = 0
+                stats.pop("active_chunk_starts", None)
+                stats_path.write_text(json.dumps(stats, indent=2), encoding="utf-8")
+                result["pipeline_reset"] = True
+    except Exception as e:
+        result["pipeline_error"] = str(e)
+
+    try:
+        st_path = Path(STATUS_FILE)
+        if st_path.exists():
+            st = json.loads(st_path.read_text(encoding="utf-8"))
+            st["errors"] = []
+            st_path.write_text(json.dumps(st, indent=2, default=str), encoding="utf-8")
+            result["errors_cleared"] = True
+    except Exception as e:
+        result["status_error"] = str(e)
+
+    result["ok"] = True
+    return result
+
+
+@app.post("/api/recorder/restart")
+def recorder_restart():
+    """Force-kill the recorder, run cleanup, then start fresh."""
+    import time as _time
+    _do_cleanup()
+    pid = _get_recorder_pid()
+    if pid:
+        try:
+            import psutil
+            proc = psutil.Process(pid)
+            proc.kill()
+            try:
+                proc.wait(timeout=8)
+            except psutil.TimeoutExpired:
+                pass
+        except Exception:
+            pass
+        for f in ("logs/recorder.pid", "logs/stop_requested.txt", "logs/reload_whisper.txt"):
+            Path(f).unlink(missing_ok=True)
+        _time.sleep(5)
+    return recorder_start()
+
+
+@app.post("/api/cleanup")
+def cleanup_service():
+    return jsonify(_do_cleanup())
+
+
 _CONTROL_FILE = "logs/recorder_control.json"
 
 def _read_control() -> dict:
@@ -479,10 +548,13 @@ def get_status():
             status["last_calendar_event"] = None
         return jsonify(status)
     if Path(STATUS_FILE).exists():
-        status = json.loads(Path(STATUS_FILE).read_text())
-        if _is_cancelled_event(status.get("last_calendar_event")):
-            status["last_calendar_event"] = None
-        return jsonify(status)
+        try:
+            status = json.loads(Path(STATUS_FILE).read_text())
+            if _is_cancelled_event(status.get("last_calendar_event")):
+                status["last_calendar_event"] = None
+            return jsonify(status)
+        except Exception:
+            pass
     return jsonify({"state": "unknown"})
 
 
@@ -527,7 +599,6 @@ def list_transcripts():
 
 @app.get("/api/transcript")
 def read_transcript():
-    from flask import request
     path = request.args.get("path", "")
     p    = Path(path)
     # Safety: only serve files inside transcripts dir
@@ -541,7 +612,6 @@ def read_transcript():
 @app.post("/api/transcript/relabel_block")
 def relabel_block():
     """Replace speaker name on a single block (line) in a transcript file."""
-    from flask import request
     import re
     data        = request.get_json() or {}
     path        = data.get("path", "")
@@ -575,7 +645,7 @@ def set_config():
     allowed = {
         "whisper_model", "language", "chunk_seconds",
         "silence_threshold", "silence_min_seconds",
-        "gdrive_folder_id", "keep_audio", "diarization_enabled",
+        "keep_audio", "diarization_enabled",
         "mic_gain", "loopback_gain", "whisper_device",
         "cpu_threads", "ram_limit_gb", "gpu_memory_fraction", "max_parallel_chunks",
     }
@@ -626,7 +696,8 @@ def delete_speaker(speaker_id):
 @app.get("/api/speakers/similar")
 def get_similar_speakers():
     try:
-        from speakers import find_similar_pairs
+        from speakers import find_similar_pairs, cleanup_speakers_without_clips
+        cleanup_speakers_without_clips()  # prune ghosts before computing pairs
         pairs = find_similar_pairs()
         return jsonify(pairs)
     except Exception as e:
@@ -636,13 +707,16 @@ def get_similar_speakers():
 @app.post("/api/speakers/merge")
 def merge_speakers_api():
     data = request.get_json() or {}
-    keep_id = data.get("keep_id", "").strip()
-    drop_id = data.get("drop_id", "").strip()
+    keep_id  = data.get("keep_id", "").strip()
+    drop_id  = data.get("drop_id", "").strip()
+    new_name = data.get("new_name", "").strip()
     if not keep_id or not drop_id:
         return jsonify({"error": "keep_id and drop_id required"}), 400
     try:
-        from speakers import merge_speakers as _merge
+        from speakers import merge_speakers as _merge, rename_speaker as _rename
         ok = _merge(keep_id, drop_id)
+        if ok and new_name:
+            _rename(keep_id, new_name)
         return jsonify({"ok": ok})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -1110,140 +1184,238 @@ def select_meeting():
 
 @app.get("/api/diagnostics")
 def get_diagnostics():
-    import shutil as _shutil
+    import shutil as _shutil, time as _time
+
+    phase = request.args.get("phase", "pipeline")  # init | recording | pipeline
+
+    uptime_s = None
+    try:
+        uptime_s = _time.time() - Path("logs/recorder.pid").stat().st_mtime
+    except Exception:
+        pass
+    starting = uptime_s is not None and uptime_s < 90  # 90s grace window after start
+
     checks = []
 
-    def _check(key, name, fn):
+    def _check(key, name, fn, only_phases=None):
+        if only_phases and phase not in only_phases:
+            return
         try:
             status, detail = fn()
         except Exception as exc:
             status, detail = "unknown", str(exc)[:80]
         checks.append({"key": key, "name": name, "status": status, "detail": detail})
 
+    def _starting(msg):
+        return "unknown", f"запускается ({int(uptime_s or 0)}с) · {msg}"
+
     # ── Whisper ───────────────────────────────────────────────────────────────
     def chk_whisper():
-        cfg = json.loads(Path(CONFIG_FILE).read_text()) if Path(CONFIG_FILE).exists() else {}
-        model = cfg.get("whisper_model", "?")
-        st = json.loads(Path(STATUS_FILE).read_text()) if Path(STATUS_FILE).exists() else {}
+        cfg_d  = json.loads(Path(CONFIG_FILE).read_text()) if Path(CONFIG_FILE).exists() else {}
+        model  = cfg_d.get("whisper_model", "?")
+        st     = json.loads(Path(STATUS_FILE).read_text()) if Path(STATUS_FILE).exists() else {}
         loaded = st.get("model_loaded", False)
-        device = st.get("whisper_device") or cfg.get("whisper_device", "auto")
+        device = st.get("whisper_device") or cfg_d.get("whisper_device", "auto")
         if not loaded:
-            return "warn", f"модель {model} не загружена · {device}"
+            return _starting(f"загружает модель {model}") if starting else ("warn", f"модель {model} не загружена")
         stats_path = Path("logs/pipeline_stats.json")
-        if not stats_path.exists():
-            return "unknown", f"модель {model} · {device} · нет статистики"
-        stats = json.loads(stats_path.read_text(encoding="utf-8"))
-        recent = [c for c in stats.get("recent", []) if c.get("audio_s", 0) > 0]
-        if not recent:
-            return "ok", f"модель {model} · {device} · нет транскрипций"
-        rtf = sum(c["transcription_s"] / c["audio_s"] for c in recent[-10:]) / min(len(recent), 10)
-        status = "ok" if rtf < 0.5 else ("warn" if rtf < 1.0 else "error")
-        return status, f"{model} · {device} · RTF {rtf:.2f}x"
+        recent = []
+        if stats_path.exists():
+            recent = [c for c in json.loads(stats_path.read_text(encoding="utf-8")).get("recent", [])
+                      if c.get("audio_s", 0) > 0]
+        rtf_str, status = "", "ok"
+        if recent:
+            rtf = sum(c["transcription_s"] / c["audio_s"] for c in recent[-10:]) / min(len(recent), 10)
+            rtf_str = f" · RTF {rtf:.2f}x"
+            status = "ok" if rtf < 0.5 else ("warn" if rtf < 1.0 else "error")
+        today_str = datetime.date.today().strftime("%Y-%m-%d")
+        gpu_crashes = 0
+        log_path = Path("logs/voice-logger.log")
+        if log_path.exists():
+            for ln in log_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+                if today_str in ln and "GPU error during transcription" in ln:
+                    gpu_crashes += 1
+        crash_str = f" · ⚠ GPU падал {gpu_crashes}× сегодня" if gpu_crashes else ""
+        if gpu_crashes and device == "cpu":
+            status = "warn"
+        return status, f"{model} · {device}{rtf_str}{crash_str}"
 
     _check("whisper", "Whisper", chk_whisper)
 
+    # ── Запись активна (recording/pipeline) ───────────────────────────────────
+    def chk_recording():
+        st     = json.loads(Path(STATUS_FILE).read_text()) if Path(STATUS_FILE).exists() else {}
+        state  = st.get("state", "")
+        paused = st.get("recording_paused", False)
+        if paused:
+            return "warn", "запись на паузе"
+        if state in ("recording", "standby", "transcribing", "diarizing", "uploading"):
+            chunk_start = st.get("current_chunk_start", "")
+            if chunk_start:
+                age = (datetime.datetime.now() - datetime.datetime.fromisoformat(chunk_start)).total_seconds()
+                return "ok", f"идёт запись · чанк {int(age)}с"
+            return "ok", "запись активна"
+        if state == "loading_model":
+            return _starting("модель загружается") if starting else ("warn", "модель не загружена")
+        return "warn", f"состояние: {state or 'неизвестно'}"
+
+    _check("recording", "Запись", chk_recording, only_phases=["recording", "pipeline"])
+
     # ── Diarization ───────────────────────────────────────────────────────────
     def chk_diarization():
-        cfg = json.loads(Path(CONFIG_FILE).read_text()) if Path(CONFIG_FILE).exists() else {}
-        if not cfg.get("diarization_enabled", True):
+        cfg_d = json.loads(Path(CONFIG_FILE).read_text()) if Path(CONFIG_FILE).exists() else {}
+        if not cfg_d.get("diarization_enabled", True):
             return "warn", "отключена в настройках"
-        hf = cfg.get("hf_token", "")
-        if not hf:
+        if not cfg_d.get("hf_token", ""):
             return "error", "hf_token не задан — диаризация не запустится"
         stats_path = Path("logs/pipeline_stats.json")
         if not stats_path.exists():
-            return "unknown", "включена · нет статистики"
-        stats = json.loads(stats_path.read_text(encoding="utf-8"))
-        recent = stats.get("recent", [])
+            return ("unknown", "ждём первого чанка") if phase != "pipeline" else ("unknown", "нет статистики")
+        recent = json.loads(stats_path.read_text(encoding="utf-8")).get("recent", [])
         if not recent:
-            return "unknown", "включена · нет данных"
-        avg_di = sum(c.get("diarization_s", 0) for c in recent) / len(recent)
+            return ("unknown", "ждём первого чанка") if phase != "pipeline" else ("unknown", "нет данных")
+        avg_di   = sum(c.get("diarization_s", 0) for c in recent) / len(recent)
         last_spk = recent[-1].get("speakers", "?")
-        return "ok", f"включена · avg {avg_di:.0f}с/чанк · последний чанк {last_spk} спикеров"
+        return "ok", f"включена · avg {avg_di:.0f}с/чанк · {last_spk} спикеров в посл. чанке"
 
     _check("diarization", "Диаризация", chk_diarization)
+
+    # ── Пайплайн (только pipeline) ────────────────────────────────────────────
+    def chk_pipeline():
+        st      = json.loads(Path(STATUS_FILE).read_text()) if Path(STATUS_FILE).exists() else {}
+        tx      = st.get("transcripts_today", 0)
+        last_tx = (st.get("last_transcript") or "")[:16]
+        if tx == 0:
+            return "warn", "ни одного чанка за сегодня"
+        stats_path = Path("logs/pipeline_stats.json")
+        if stats_path.exists():
+            recent = json.loads(stats_path.read_text(encoding="utf-8")).get("recent", [])
+            if recent:
+                c = recent[-1]
+                return "ok", (f"{tx} чанков сегодня · посл: "
+                              f"{c.get('transcription_s',0):.0f}с тр + "
+                              f"{c.get('diarization_s',0):.0f}с диар = "
+                              f"{c.get('total_s',0):.0f}с · {last_tx}")
+        return "ok", f"{tx} чанков сегодня"
+
+    _check("pipeline", "Пайплайн", chk_pipeline, only_phases=["pipeline"])
 
     # ── Outlook Calendar ──────────────────────────────────────────────────────
     def chk_calendar():
         today_str = datetime.date.today().strftime("%Y-%m-%d")
         fp = Path(TODAY_MEETINGS_FILE)
         if not fp.exists():
-            return "warn", "кэш событий не найден"
+            return _starting("загружает календарь") if starting else ("warn", "кэш событий не найден")
         data = json.loads(fp.read_text(encoding="utf-8"))
         if data.get("date") != today_str:
             return "warn", f"кэш устарел (от {data.get('date', '?')})"
         meetings = data.get("meetings", [])
-        updated = data.get("updated_at", "")[:16]
+        updated  = data.get("updated_at", "")[:16]
         return "ok", f"{len(meetings)} событий сегодня · обновлено {updated}"
 
     _check("calendar", "Outlook Calendar", chk_calendar)
 
     # ── Obsidian ──────────────────────────────────────────────────────────────
     def chk_obsidian():
-        import urllib.request as _ur, ssl as _ssl, time as _t
-        cfg = json.loads(Path(CONFIG_FILE).read_text()) if Path(CONFIG_FILE).exists() else {}
-        url = cfg.get("obsidian_url", "").rstrip("/")
-        key = cfg.get("obsidian_api_key", "")
+        import urllib.request as _ur, ssl as _ssl
+        cfg_d = json.loads(Path(CONFIG_FILE).read_text()) if Path(CONFIG_FILE).exists() else {}
+        url   = cfg_d.get("obsidian_url", "").rstrip("/")
+        key   = cfg_d.get("obsidian_api_key", "")
         if not url or not key:
             return "warn", "obsidian_url / obsidian_api_key не настроены"
         ctx = _ssl.create_default_context()
         ctx.check_hostname = False
-        ctx.verify_mode = _ssl.CERT_NONE
-        t0 = _t.time()
+        ctx.verify_mode    = _ssl.CERT_NONE
+        t0 = _time.time()
         try:
             req = _ur.Request(url + "/", headers={"Authorization": f"Bearer {key}"})
             _ur.urlopen(req, context=ctx, timeout=3)
-            ms = int((_t.time() - t0) * 1000)
-            return "ok", f"отвечает · {ms}мс"
+            return "ok", f"отвечает · {int((_time.time()-t0)*1000)}мс"
         except Exception as e:
+            launched_path = Path("logs/obsidian_launched.json")
+            obsidian_starting = starting
+            if not obsidian_starting and launched_path.exists():
+                try:
+                    launched_at = datetime.datetime.fromisoformat(
+                        json.loads(launched_path.read_text())["launched_at"]
+                    )
+                    obsidian_starting = (datetime.datetime.now() - launched_at).total_seconds() < 120
+                except Exception:
+                    pass
+            if obsidian_starting:
+                return _starting(f"не отвечает: {str(e)[:40]}")
             return "error", f"не отвечает: {str(e)[:60]}"
 
     _check("obsidian", "Obsidian", chk_obsidian)
 
+    # ── Google Drive ──────────────────────────────────────────────────────────
+    def chk_gdrive():
+        cfg_d = json.loads(Path(CONFIG_FILE).read_text()) if Path(CONFIG_FILE).exists() else {}
+        if not cfg_d.get("gdrive_folder_id", ""):
+            return "warn", "gdrive_folder_id не настроен"
+        creds = Path("credentials.json")
+        token = Path("token.json")
+        if not creds.exists():
+            return "error", "credentials.json не найден"
+        if not token.exists():
+            return "warn", "token.json не найден — требуется авторизация"
+        drive_files = Path("logs/drive_files.json")
+        if not drive_files.exists():
+            return "warn", "нет загруженных файлов (drive_files.json отсутствует)"
+        files = json.loads(drive_files.read_text(encoding="utf-8"))
+        count = len(files)
+        if count == 0:
+            return "warn", "файлы не загружались"
+        stats_path = Path("logs/pipeline_stats.json")
+        last_ts = None
+        if stats_path.exists():
+            stats = json.loads(stats_path.read_text(encoding="utf-8"))
+            for c in reversed(stats.get("recent", [])):
+                if c.get("upload_s", 0) > 0:
+                    last_ts = c.get("started_at", "")[:16]
+                    break
+        detail = f"{count} файлов на Drive"
+        if last_ts:
+            detail += f" · посл. загрузка {last_ts}"
+        return "ok", detail
+
+    _check("gdrive", "Google Drive", chk_gdrive)
+
     # ── Audio ─────────────────────────────────────────────────────────────────
     def chk_audio():
         if not Path(STATUS_FILE).exists():
-            return "unknown", "статус недоступен"
-        st = json.loads(Path(STATUS_FILE).read_text())
+            return _starting("статус ещё не создан") if starting else ("unknown", "статус недоступен")
+        st       = json.loads(Path(STATUS_FILE).read_text())
         loopback = st.get("loopback_active", False)
-        parts = []
-        cfg = json.loads(Path(CONFIG_FILE).read_text()) if Path(CONFIG_FILE).exists() else {}
-        lb_dev = cfg.get("loopback_device")
-        if lb_dev:
-            parts.append(f"loopback: {str(lb_dev)[:30]}")
         if loopback:
-            parts.append("loopback активен")
-            return "ok", " · ".join(parts) if parts else "микрофон + loopback активны"
-        else:
-            return "warn", "loopback не обнаружен · только микрофон"
+            return "ok", "микрофон + loopback активны"
+        return "warn", "loopback не обнаружен · только микрофон"
 
     _check("audio", "Аудио", chk_audio)
 
-    # ── Speaker registry ──────────────────────────────────────────────────────
+    # ── Speakers ──────────────────────────────────────────────────────────────
     def chk_speakers():
         reg = Path("speakers/registry.json")
         if not reg.exists():
             return "warn", "реестр спикеров не найден"
-        data = json.loads(reg.read_text(encoding="utf-8"))
-        speakers = data.get("speakers", data) if isinstance(data, dict) else {}
+        speakers = json.loads(reg.read_text(encoding="utf-8")).get("speakers", {})
         if not isinstance(speakers, dict):
             return "warn", "неожиданный формат реестра"
-        total = len(speakers)
-        named = sum(1 for s in speakers.values()
-                    if isinstance(s, dict) and not str(s.get("name", "")).startswith("Speaker_"))
-        owner_cnt = sum(1 for s in speakers.values()
-                        if isinstance(s, dict) and s.get("is_owner"))
+        total     = len(speakers)
+        named     = sum(1 for s in speakers.values()
+                        if isinstance(s, dict) and not str(s.get("name", "")).startswith("Speaker_"))
+        owner_cnt = sum(1 for s in speakers.values() if isinstance(s, dict) and s.get("is_owner"))
         return "ok", f"{total} спикеров · {named} с именем · {owner_cnt} владелец"
 
     _check("speakers", "Спикеры", chk_speakers)
 
-    # ── Disk space ────────────────────────────────────────────────────────────
+    # ── Disk ──────────────────────────────────────────────────────────────────
     def chk_disk():
-        usage = _shutil.disk_usage(".")
-        free_gb = usage.free / 1e9
-        total_gb = usage.total / 1e9
-        pct = usage.used / usage.total * 100
-        status = "ok" if free_gb > 5 else ("warn" if free_gb > 1 else "error")
+        u        = _shutil.disk_usage(".")
+        free_gb  = u.free  / 1e9
+        total_gb = u.total / 1e9
+        pct      = u.used  / u.total * 100
+        status   = "ok" if free_gb > 5 else ("warn" if free_gb > 1 else "error")
         return status, f"свободно {free_gb:.1f} ГБ из {total_gb:.0f} ГБ ({pct:.0f}% занято)"
 
     _check("disk", "Диск", chk_disk)
@@ -1253,26 +1425,25 @@ def get_diagnostics():
         import subprocess as _sp
         try:
             r = _sp.run(
-                ["nvidia-smi",
-                 "--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu",
+                ["nvidia-smi", "--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu",
                  "--format=csv,noheader,nounits"],
                 capture_output=True, text=True, timeout=3,
             )
         except FileNotFoundError:
-            return "unknown", "nvidia-smi не найден (нет GPU или не в PATH)"
+            return "unknown", "nvidia-smi не найден"
         if r.returncode != 0 or not r.stdout.strip():
             return "unknown", "GPU не обнаружен"
-        parts = [x.strip() for x in r.stdout.strip().split(",")]
-        name = parts[0]
-        util, mem_used, mem_total, temp = int(parts[1]), int(parts[2]), int(parts[3]), int(parts[4])
-        mem_pct = round(mem_used / max(mem_total, 1) * 100, 1)
+        p = [x.strip() for x in r.stdout.strip().split(",")]
+        util, mem_used, mem_total, temp = int(p[1]), int(p[2]), int(p[3]), int(p[4])
         status = "ok" if temp < 80 else ("warn" if temp < 90 else "error")
-        return status, f"{name} · {util}% · VRAM {mem_used}/{mem_total}МБ ({mem_pct}%) · {temp}°C"
+        return status, f"{p[0]} · {util}% · VRAM {mem_used}/{mem_total}МБ · {temp}°C"
 
     _check("gpu", "GPU", chk_gpu)
 
     return jsonify({
         "checks":    checks,
+        "phase":     phase,
+        "uptime_s":  int(uptime_s) if uptime_s is not None else None,
         "timestamp": datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
     })
 

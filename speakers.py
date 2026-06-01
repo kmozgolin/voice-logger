@@ -19,6 +19,7 @@ import json
 import uuid
 import logging
 import datetime
+import threading
 import numpy as np
 from pathlib import Path
 from typing import Optional
@@ -29,6 +30,8 @@ log = logging.getLogger("voice-logger.speakers")
 SPEAKERS_DIR   = Path("speakers")
 EMBEDDINGS_DIR = SPEAKERS_DIR / "embeddings"
 REGISTRY_FILE  = SPEAKERS_DIR / "registry.json"
+
+_registry_lock = threading.Lock()  # serialises all registry reads/writes across threads
 
 SIMILARITY_THRESHOLD = 0.65    # cosine similarity; lowered for mic-only conditions
 OWNER_THRESHOLD      = 0.58    # slightly looser for the owner (you talk in many styles)
@@ -84,12 +87,14 @@ def _save_registry(reg: dict):
 
 
 def list_speakers() -> list[dict]:
-    reg = _load_registry()
+    with _registry_lock:
+        reg = _load_registry()
     return [{"id": k, **v} for k, v in reg.items()]
 
 
 def get_owner() -> Optional[dict]:
-    reg = _load_registry()
+    with _registry_lock:
+        reg = _load_registry()
     for sid, info in reg.items():
         if info.get("is_owner"):
             return {"id": sid, **info}
@@ -147,37 +152,37 @@ def enroll_speaker(
         log.error("Could not extract embedding — enrollment failed.")
         return None
 
-    reg = _load_registry()
+    with _registry_lock:
+        reg = _load_registry()
 
-    # If owner already exists, just update embedding
-    if is_owner:
-        for sid, info in reg.items():
-            if info.get("is_owner"):
-                existing = _load_embedding(sid)
-                if existing is not None:
-                    # running mean of embeddings for robustness
-                    merged = (existing * info.get("samples", 1) + vec) / (info.get("samples", 1) + 1)
-                    norm = np.linalg.norm(merged)
-                    merged = merged / norm if norm > 1e-9 else merged
-                    _save_embedding(sid, merged)
-                else:
-                    _save_embedding(sid, vec)
-                reg[sid]["samples"] = info.get("samples", 1) + 1
-                reg[sid]["last_updated"] = datetime.datetime.now().isoformat()
-                _save_registry(reg)
-                log.info(f"Owner embedding updated (sid={sid})")
-                return sid
+        if is_owner:
+            for sid, info in reg.items():
+                if info.get("is_owner"):
+                    existing = _load_embedding(sid)
+                    if existing is not None:
+                        merged = (existing * info.get("samples", 1) + vec) / (info.get("samples", 1) + 1)
+                        norm = np.linalg.norm(merged)
+                        merged = merged / norm if norm > 1e-9 else merged
+                        _save_embedding(sid, merged)
+                    else:
+                        _save_embedding(sid, vec)
+                    reg[sid]["samples"] = info.get("samples", 1) + 1
+                    reg[sid]["last_updated"] = datetime.datetime.now().isoformat()
+                    _save_registry(reg)
+                    log.info(f"Owner embedding updated (sid={sid})")
+                    return sid
 
-    speaker_id = str(uuid.uuid4())[:8]
-    reg[speaker_id] = {
-        "name":        name,
-        "is_owner":    is_owner,
-        "enrolled_at": datetime.datetime.now().isoformat(),
-        "samples":     1,
-        "color":       _next_color(reg),
-    }
-    _save_embedding(speaker_id, vec)
-    _save_registry(reg)
+        speaker_id = str(uuid.uuid4())[:8]
+        reg[speaker_id] = {
+            "name":        name,
+            "is_owner":    is_owner,
+            "enrolled_at": datetime.datetime.now().isoformat(),
+            "samples":     1,
+            "color":       _next_color(reg),
+        }
+        _save_embedding(speaker_id, vec)
+        _save_registry(reg)
+
     log.info(f"Enrolled speaker '{name}' with id={speaker_id}")
     return speaker_id
 
@@ -233,63 +238,65 @@ def identify_speaker(audio_path: Path, segment_start: float, segment_end: float)
         log.warning(f"Segment extraction error: {e}")
         return _unknown_result()
 
-    reg = _load_registry()
-    best_id    = None
-    best_score = -1.0
-    best_threshold = SIMILARITY_THRESHOLD
+    with _registry_lock:
+        reg = _load_registry()
+        best_id    = None
+        best_score = -1.0
+        best_threshold = SIMILARITY_THRESHOLD
 
-    for sid, info in reg.items():
-        emb = _load_embedding(sid)
-        if emb is None:
-            continue
-        score = _cosine(vec, emb)
-        threshold = OWNER_THRESHOLD if info.get("is_owner") else SIMILARITY_THRESHOLD
-        if score > best_score:
-            best_score = score
-            best_id    = sid
-            best_threshold = threshold
+        for sid, info in reg.items():
+            emb = _load_embedding(sid)
+            if emb is None:
+                continue
+            score = _cosine(vec, emb)
+            threshold = OWNER_THRESHOLD if info.get("is_owner") else SIMILARITY_THRESHOLD
+            if score > best_score:
+                best_score = score
+                best_id    = sid
+                best_threshold = threshold
 
-    if best_id and best_score >= best_threshold:
-        info = reg[best_id]
-        # Update running mean embedding for the matched speaker
-        existing = _load_embedding(best_id)
-        if existing is not None and best_score >= 0.70:
-            n = info.get("samples", 1)
-            merged = (existing * n + vec) / (n + 1)
-            norm = np.linalg.norm(merged)
-            _save_embedding(best_id, merged / norm if norm > 1e-9 else merged)
-            reg[best_id]["samples"] = n + 1
-            _save_registry(reg)
-        return {
-            "id":       best_id,
-            "name":     info["name"],
-            "score":    round(best_score, 3),
-            "is_owner": info.get("is_owner", False),
-            "color":    info.get("color", "#888"),
-            "new":      False,
+        if best_id and best_score >= best_threshold:
+            info = reg[best_id]
+            existing = _load_embedding(best_id)
+            if existing is not None and best_score >= 0.70:
+                n = info.get("samples", 1)
+                merged = (existing * n + vec) / (n + 1)
+                norm = np.linalg.norm(merged)
+                _save_embedding(best_id, merged / norm if norm > 1e-9 else merged)
+                reg[best_id]["samples"] = n + 1
+                _save_registry(reg)
+            return {
+                "id":       best_id,
+                "name":     info["name"],
+                "score":    round(best_score, 3),
+                "is_owner": info.get("is_owner", False),
+                "color":    info.get("color", "#888"),
+                "new":      False,
+            }
+
+        # Unknown speaker — auto-register as Speaker_N
+        n_unknown = sum(1 for v in reg.values() if v.get("auto_unknown"))
+        speaker_id = str(uuid.uuid4())[:8]
+        new_name   = f"Speaker_{n_unknown + 1}"
+        reg[speaker_id] = {
+            "name":         new_name,
+            "is_owner":     False,
+            "enrolled_at":  datetime.datetime.now().isoformat(),
+            "samples":      1,
+            "auto_unknown": True,
+            "color":        _next_color(reg),
         }
+        new_color = reg[speaker_id]["color"]
+        _save_embedding(speaker_id, vec)
+        _save_registry(reg)
 
-    # Unknown speaker — auto-register as Speaker_N
-    n_unknown = sum(1 for v in reg.values() if v.get("auto_unknown"))
-    speaker_id = str(uuid.uuid4())[:8]
-    reg[speaker_id] = {
-        "name":         f"Speaker_{n_unknown + 1}",
-        "is_owner":     False,
-        "enrolled_at":  datetime.datetime.now().isoformat(),
-        "samples":      1,
-        "auto_unknown": True,
-        "color":        _next_color(reg),
-    }
-    _save_embedding(speaker_id, vec)
-    _save_registry(reg)
-    log.info(f"New unknown speaker auto-registered: Speaker_{n_unknown + 1} (id={speaker_id})")
-
+    log.info(f"New unknown speaker auto-registered: {new_name} (id={speaker_id})")
     return {
         "id":       speaker_id,
-        "name":     f"Speaker_{n_unknown + 1}",
+        "name":     new_name,
         "score":    round(best_score if best_score >= 0 else 0, 3),
         "is_owner": False,
-        "color":    reg[speaker_id]["color"],
+        "color":    new_color,
         "new":      True,
     }
 
@@ -301,46 +308,51 @@ def _unknown_result() -> dict:
 
 def add_sample(speaker_id: str, audio_path) -> bool:
     """Refine an existing speaker's embedding by merging in a new audio sample (running mean)."""
-    reg = _load_registry()
-    if speaker_id not in reg:
-        log.warning(f"add_sample: speaker {speaker_id} not found")
-        return False
     vec = _extract_embedding(Path(audio_path))
     if vec is None:
         return False
-    existing = _load_embedding(speaker_id)
-    if existing is not None:
-        n = reg[speaker_id].get("samples", 1)
-        merged = (existing * n + vec) / (n + 1)
-        norm = np.linalg.norm(merged)
-        merged = merged / norm if norm > 1e-9 else merged
-        _save_embedding(speaker_id, merged)
-        reg[speaker_id]["samples"] = n + 1
-    else:
-        _save_embedding(speaker_id, vec)
-        reg[speaker_id]["samples"] = 1
-    reg[speaker_id]["last_updated"] = datetime.datetime.now().isoformat()
-    _save_registry(reg)
-    log.info(f"add_sample: {reg[speaker_id]['name']} updated (sid={speaker_id}, samples={reg[speaker_id]['samples']})")
+    with _registry_lock:
+        reg = _load_registry()
+        if speaker_id not in reg:
+            log.warning(f"add_sample: speaker {speaker_id} not found")
+            return False
+        existing = _load_embedding(speaker_id)
+        if existing is not None:
+            n = reg[speaker_id].get("samples", 1)
+            merged = (existing * n + vec) / (n + 1)
+            norm = np.linalg.norm(merged)
+            merged = merged / norm if norm > 1e-9 else merged
+            _save_embedding(speaker_id, merged)
+            reg[speaker_id]["samples"] = n + 1
+        else:
+            _save_embedding(speaker_id, vec)
+            reg[speaker_id]["samples"] = 1
+        reg[speaker_id]["last_updated"] = datetime.datetime.now().isoformat()
+        name = reg[speaker_id]["name"]
+        samples = reg[speaker_id]["samples"]
+        _save_registry(reg)
+    log.info(f"add_sample: {name} updated (sid={speaker_id}, samples={samples})")
     return True
 
 
 def set_speaker_clip(speaker_id: str, clip_path: str):
     """Store the path to a short preview clip in the speaker's registry entry."""
-    reg = _load_registry()
-    if speaker_id in reg:
-        reg[speaker_id]["clip_path"] = clip_path
-        _save_registry(reg)
+    with _registry_lock:
+        reg = _load_registry()
+        if speaker_id in reg:
+            reg[speaker_id]["clip_path"] = clip_path
+            _save_registry(reg)
 
 
 def rename_speaker(speaker_id: str, new_name: str) -> bool:
     """Rename a speaker (e.g. 'Speaker_1' → 'Андрей')."""
-    reg = _load_registry()
-    if speaker_id not in reg:
-        return False
-    reg[speaker_id]["name"] = new_name
-    reg[speaker_id]["auto_unknown"] = False
-    _save_registry(reg)
+    with _registry_lock:
+        reg = _load_registry()
+        if speaker_id not in reg:
+            return False
+        reg[speaker_id]["name"] = new_name
+        reg[speaker_id]["auto_unknown"] = False
+        _save_registry(reg)
     log.info(f"Speaker {speaker_id} renamed to '{new_name}'")
     return True
 
@@ -368,7 +380,8 @@ def find_similar_pairs() -> list[dict]:
     These are candidates for manual merge — similar enough to be suspicious,
     but below the auto-match threshold.
     """
-    reg  = _load_registry()
+    with _registry_lock:
+        reg = _load_registry()
     ids  = list(reg.keys())
     dismissed = _load_dismissed()
 
@@ -385,6 +398,9 @@ def find_similar_pairs() -> list[dict]:
             if a not in embs or b not in embs:
                 continue
             if _pair_key(a, b) in dismissed:
+                continue
+            # Skip pairs where either speaker has no audio clip — can't do a meaningful review
+            if not reg[a].get("clip_path") or not reg[b].get("clip_path"):
                 continue
             s = _cosine(embs[a], embs[b])
             if SUSPICIOUS_LOW <= s < SIMILARITY_THRESHOLD:
@@ -405,26 +421,48 @@ def find_similar_pairs() -> list[dict]:
 
 def merge_speakers(keep_id: str, drop_id: str) -> bool:
     """Merge drop_id into keep_id: combine embeddings, delete drop entry."""
-    reg = _load_registry()
-    if keep_id not in reg or drop_id not in reg:
-        return False
+    with _registry_lock:
+        reg = _load_registry()
+        if keep_id not in reg or drop_id not in reg:
+            return False
 
-    keep_emb = _load_embedding(keep_id)
-    drop_emb = _load_embedding(drop_id)
-    if keep_emb is not None and drop_emb is not None:
-        k_n = reg[keep_id].get("samples", 1)
-        d_n = reg[drop_id].get("samples", 1)
-        merged = (keep_emb * k_n + drop_emb * d_n) / (k_n + d_n)
-        norm = np.linalg.norm(merged)
-        _save_embedding(keep_id, merged / norm if norm > 1e-9 else merged)
-        reg[keep_id]["samples"] = k_n + d_n
+        keep_emb = _load_embedding(keep_id)
+        drop_emb = _load_embedding(drop_id)
+        if keep_emb is not None and drop_emb is not None:
+            k_n = reg[keep_id].get("samples", 1)
+            d_n = reg[drop_id].get("samples", 1)
+            merged = (keep_emb * k_n + drop_emb * d_n) / (k_n + d_n)
+            norm = np.linalg.norm(merged)
+            _save_embedding(keep_id, merged / norm if norm > 1e-9 else merged)
+            reg[keep_id]["samples"] = k_n + d_n
 
-    del reg[drop_id]
-    (EMBEDDINGS_DIR / f"{drop_id}.npy").unlink(missing_ok=True)
-    reg[keep_id]["last_updated"] = datetime.datetime.now().isoformat()
-    _save_registry(reg)
-    log.info(f"Merged speaker {drop_id} into {keep_id} ({reg[keep_id]['name']})")
+        keep_name = reg[keep_id]["name"]
+        del reg[drop_id]
+        (EMBEDDINGS_DIR / f"{drop_id}.npy").unlink(missing_ok=True)
+        reg[keep_id]["last_updated"] = datetime.datetime.now().isoformat()
+        _save_registry(reg)
+    log.info(f"Merged speaker {drop_id} into {keep_id} ({keep_name})")
     return True
+
+
+def cleanup_speakers_without_clips() -> int:
+    """Delete auto-unknown speakers that have no audio clip (unreviewed ghosts).
+    Returns the number of deleted entries.
+    """
+    with _registry_lock:
+        reg = _load_registry()
+        to_delete = [
+            sid for sid, info in reg.items()
+            if info.get("auto_unknown") and not info.get("clip_path")
+        ]
+        for sid in to_delete:
+            del reg[sid]
+            (EMBEDDINGS_DIR / f"{sid}.npy").unlink(missing_ok=True)
+        if to_delete:
+            _save_registry(reg)
+    if to_delete:
+        log.info(f"Cleaned up {len(to_delete)} ghost speakers (no clip): {to_delete}")
+    return len(to_delete)
 
 
 def dismiss_pair(id_a: str, id_b: str):
@@ -435,12 +473,12 @@ def dismiss_pair(id_a: str, id_b: str):
 
 
 def delete_speaker(speaker_id: str) -> bool:
-    reg = _load_registry()
-    if speaker_id not in reg:
-        return False
-    del reg[speaker_id]
-    _save_registry(reg)
-    emb = EMBEDDINGS_DIR / f"{speaker_id}.npy"
-    emb.unlink(missing_ok=True)
+    with _registry_lock:
+        reg = _load_registry()
+        if speaker_id not in reg:
+            return False
+        del reg[speaker_id]
+        _save_registry(reg)
+    (EMBEDDINGS_DIR / f"{speaker_id}.npy").unlink(missing_ok=True)
     log.info(f"Speaker {speaker_id} deleted")
     return True

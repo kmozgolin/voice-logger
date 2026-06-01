@@ -1,8 +1,8 @@
 ﻿"""
 voice-logger / recorder.py
 Continuously records microphone audio in chunks, transcribes with Whisper,
-enriches with Outlook calendar events, and saves markdown files to a watched
-Google Drive folder (for NotebookLM ingestion).
+enriches with Outlook calendar events, diarizes speakers, and syncs
+structured Markdown transcripts to Obsidian.
 """
 
 import os
@@ -35,6 +35,16 @@ try:
 except ImportError:
     OUTLOOK_AVAILABLE = False
 
+try:
+    from google.oauth2.credentials import Credentials
+    from google_auth_oauthlib.flow import InstalledAppFlow
+    from google.auth.transport.requests import Request
+    from googleapiclient.discovery import build
+    from googleapiclient.http import MediaFileUpload
+    GDRIVE_AVAILABLE = True
+except ImportError:
+    GDRIVE_AVAILABLE = False
+
 TODAY_MEETINGS_FILE = "logs/today_meetings.json"
 
 # ── Logging ────────────────────────────────────────────────────────────────
@@ -60,6 +70,9 @@ DEFAULT_CONFIG = {
     "silence_min_seconds": 3,          # skip chunk if mostly silent
     "transcripts_dir": "transcripts",
     "recordings_dir": "recordings",
+    "gdrive_folder_id": "",            # Google Drive folder ID for NotebookLM
+    "gdrive_credentials": "credentials.json",
+    "gdrive_token": "token.json",
     "keep_audio": False,               # delete .wav after transcription
     "status_file": "logs/status.json", # live status for the dashboard UI
     "forced_meeting_file": "logs/forced_meeting.json",  # user-selected meeting override
@@ -106,10 +119,9 @@ _status = {
 
 
 _is_finishing = False  # set True while waiting for threads after recording stops
+_BLOCKED_WHEN_FINISHING = frozenset({'recording', 'transcribing', 'diarizing', 'uploading'})
 
 def update_status(**kwargs):
-    # Once recording has stopped, don't let chunk threads override 'finishing'
-    _BLOCKED_WHEN_FINISHING = {'recording', 'transcribing', 'diarizing', 'uploading'}
     if _is_finishing and kwargs.get('state') in _BLOCKED_WHEN_FINISHING:
         kwargs.pop('state')
     if not kwargs:
@@ -117,7 +129,8 @@ def update_status(**kwargs):
     _status.update(kwargs)
     _status["updated_at"] = datetime.datetime.now().isoformat()
     try:
-        with open(cfg["status_file"], "w") as f:
+        status_file = cfg.get("status_file", "logs/status.json") if cfg else "logs/status.json"
+        with open(status_file, "w") as f:
             json.dump(_status, f, indent=2, default=str)
     except Exception:
         pass
@@ -271,6 +284,13 @@ def _ensure_obsidian():
         import subprocess
         subprocess.Popen([str(_OBSIDIAN_EXE)], close_fds=True)
         log.info("Obsidian not responding — launched process")
+        try:
+            Path("logs/obsidian_launched.json").write_text(
+                json.dumps({"launched_at": datetime.datetime.now().isoformat()}),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
     else:
         log.warning(f"Obsidian not responding and exe not found at {_OBSIDIAN_EXE}")
 
@@ -342,97 +362,186 @@ def get_outlook_event_at(dt: datetime.datetime) -> dict | None:
     except Exception as e:
         log.warning(f"Meeting cache read error: {e}")
     return None
-    try:
-        outlook = win32com.client.Dispatch("Outlook.Application")
-        ns = outlook.GetNamespace("MAPI")
-        cal = ns.GetDefaultFolder(9)  # olFolderCalendar
-        items = cal.Items
-        items.IncludeRecurrences = True
-        items.Sort("[Start]")
 
-        window_start = dt - datetime.timedelta(minutes=90)
-        window_end   = dt + datetime.timedelta(minutes=90)
-        restriction = (
-            f"[Start] >= '{window_start.strftime('%m/%d/%Y %H:%M')}' "
-            f"AND [Start] <= '{window_end.strftime('%m/%d/%Y %H:%M')}'"
-        )
-        restricted = items.Restrict(restriction)
 
-        for item in restricted:
-            subj  = str(getattr(item, "Subject", "") or "").lower()
-            subj_norm = subj.replace('\u0441', 'c')  # кириллическая с → латинская c
-            if "cancelled" in subj_norm or "canceled" in subj_norm \
-                    or "отменена" in subj or "отменен" in subj:
+# ── Google Drive upload ────────────────────────────────────────────────────
+_gdrive_service  = None
+_gdrive_disabled = False   # set True after unrecoverable auth failure
+
+def _get_gdrive_service():
+    global _gdrive_service, _gdrive_disabled
+    if _gdrive_disabled:
+        return None
+    if _gdrive_service:
+        return _gdrive_service
+    if not GDRIVE_AVAILABLE:
+        return None
+    SCOPES = ["https://www.googleapis.com/auth/drive.file"]
+    creds = None
+    token_path = cfg.get("gdrive_token", "token.json")
+    creds_path = cfg.get("gdrive_credentials", "credentials.json")
+    if Path(token_path).exists():
+        creds = Credentials.from_authorized_user_file(token_path, SCOPES)
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            try:
+                creds.refresh(Request())
+            except Exception as e:
+                log.error(f"Google Drive token refresh failed: {e}")
+                Path(token_path).unlink(missing_ok=True)
+                _gdrive_disabled = True
+                msg = "Google Drive: токен отозван. Запустите python check_gdrive.py для повторной авторизации."
+                log.warning(msg)
+                errors = _status.get("errors", [])
+                if msg not in errors:
+                    errors.append(msg)
+                return None
+        elif Path(creds_path).exists():
+            flow = InstalledAppFlow.from_client_secrets_file(creds_path, SCOPES)
+            creds = flow.run_local_server(port=0)
+        else:
+            log.warning("Google Drive credentials not found – skipping upload.")
+            return None
+        with open(token_path, "w") as t:
+            t.write(creds.to_json())
+    _gdrive_service = build("drive", "v3", credentials=creds)
+    return _gdrive_service
+
+
+def upload_to_gdrive(
+    file_path: Path,
+    folder_id: str,
+    file_id: str = None,
+    as_gdoc: bool = False,
+) -> str | None:
+    """
+    Upload or update a file on Google Drive.
+    - file_id=None  → create new file; returns new file ID.
+    - file_id=<id>  → overwrite existing file; returns same ID.
+    - as_gdoc=True  → convert to Google Docs format (required for NotebookLM).
+    """
+    global _gdrive_service
+    svc = _get_gdrive_service()
+    if not svc or not folder_id:
+        return None
+
+    _TRANSIENT = ("ssl", "eof", "timeout", "connection", "reset", "broken pipe", "remote end")
+
+    last_err = None
+    for attempt in range(3):
+        try:
+            update_status(state="uploading")
+            media = MediaFileUpload(str(file_path), mimetype="text/plain")
+            if file_id:
+                svc.files().update(fileId=file_id, media_body=media).execute()
+                log.info(f"Updated {file_path.name} → Drive id={file_id}")
+            else:
+                meta = {"name": file_path.stem, "parents": [folder_id]}
+                if as_gdoc:
+                    meta["mimeType"] = "application/vnd.google-apps.document"
+                result = svc.files().create(body=meta, media_body=media, fields="id").execute()
+                file_id = result.get("id")
+                log.info(f"Uploaded {file_path.name} → Drive id={file_id}")
+            errors = _status.get("errors", [])
+            _status["errors"] = [e for e in errors
+                                  if not any(s in e.lower() for s in _TRANSIENT)]
+            return file_id
+        except Exception as e:
+            last_err = e
+            is_transient = any(s in str(e).lower() for s in _TRANSIENT)
+            if is_transient and attempt < 2:
+                log.warning(f"Drive upload transient error (attempt {attempt+1}/3): {e} — retrying…")
+                _gdrive_service = None
+                svc = _get_gdrive_service()
+                if not svc:
+                    break
+                time.sleep(2 ** attempt)
                 continue
-            start = item.Start.replace(tzinfo=None) if hasattr(item.Start, 'replace') else item.Start
-            end   = item.End.replace(tzinfo=None)   if hasattr(item.End,   'replace') else item.End
-            if start <= dt <= end:
-                return {
-                    "subject":    item.Subject,
-                    "start":      start.strftime("%Y-%m-%dT%H:%M:%S"),
-                    "end":        end.strftime("%Y-%m-%dT%H:%M:%S"),
-                    "organizer":  getattr(item, "Organizer", ""),
-                    "attendees":  getattr(item, "RequiredAttendees", ""),
-                    "location":   getattr(item, "Location", ""),
-                    "categories": getattr(item, "Categories", "") or "",
-                }
-    except Exception as e:
-        log.warning(f"Outlook error: {e}")
+            break
+
+    log.error(f"Drive upload failed: {last_err}")
+    err_str = str(last_err)
+    errors = _status.get("errors", [])
+    if err_str not in errors:
+        errors.append(err_str)
+    _gdrive_service = None
     return None
 
 
 # ── Whisper transcription ──────────────────────────────────────────────────
 _whisper_model = None
-_model_ready   = threading.Event()   # set once model is loaded; transcribe() waits on it
+_model_ready        = threading.Event()   # set once model is loaded; transcribe() waits on it
+_gpu_recovery_lock  = threading.Lock()    # only one thread recovers from GPU crash at a time
+_whisper_load_lock  = threading.Lock()    # prevents concurrent load_whisper() calls
 
 def load_whisper(model_name: str):
+    with _whisper_load_lock:
+        _model_ready.clear()
+        os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+        try:
+            _load_whisper_inner(model_name)
+        except Exception as e:
+            log.error(f"Whisper loader thread crashed: {e}", exc_info=True)
+            _model_ready.set()  # unblock waiting transcribe() threads so they fail fast
+
+
+def _load_whisper_inner(model_name: str):
     global _whisper_model
     device = cfg.get("whisper_device", "auto")
     if device == "auto":
         try:
-            import os, torch
-            # Windows: PyTorch bundled CUDA DLLs may not be in PATH — add explicitly
-            _torch_lib = os.path.join(os.path.dirname(torch.__file__), "lib")
-            if hasattr(os, "add_dll_directory"):
-                os.add_dll_directory(_torch_lib)
-            os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+            import torch
             device = "cuda" if torch.cuda.is_available() else "cpu"
         except Exception:
             device = "cpu"
 
+    log.info(f"Loading Whisper model '{model_name}' on {device} ...")
+
     try:
         import torch
-        # Limit CPU threads to leave headroom for video calls
         cpu_threads = cfg.get("cpu_threads", 4)
         torch.set_num_threads(cpu_threads)
         torch.set_num_interop_threads(max(1, cpu_threads // 2))
         log.info(f"CPU threads limited to {cpu_threads}")
-        # Limit GPU memory fraction
-        if device == "cuda":
-            frac = float(cfg.get("gpu_memory_fraction", 0.5))
-            torch.cuda.set_per_process_memory_fraction(frac)
-            log.info(f"GPU memory fraction limited to {frac:.0%}")
+        frac = float(cfg.get("gpu_memory_fraction", 0.5))
+        torch.cuda.set_per_process_memory_fraction(frac)
+        log.info(f"GPU memory fraction limited to {frac:.0%}")
     except Exception as e:
         log.warning(f"Resource limit setup failed: {e}")
 
-    # Lower process priority so video calls are not starved
     try:
-        import psutil, os
-        p = psutil.Process(os.getpid())
-        p.nice(psutil.BELOW_NORMAL_PRIORITY_CLASS)
+        import psutil
+        psutil.Process(os.getpid()).nice(psutil.BELOW_NORMAL_PRIORITY_CLASS)
         log.info("Process priority set to BELOW_NORMAL")
     except Exception:
         pass
 
-    log.info(f"Loading Whisper model '{model_name}' on {device} ...")
+    # Free old model before loading new one to avoid double VRAM usage
+    if _whisper_model is not None:
+        _whisper_model = None
+        try:
+            import torch, gc
+            gc.collect()
+            torch.cuda.empty_cache()
+        except Exception:
+            pass
+
     update_status(state="loading_model")
     try:
         _whisper_model = whisper.load_model(model_name, device=device)
     except Exception as e:
         if device == "cuda":
-            log.warning(f"Failed to load on CUDA ({e}) — falling back to CPU")
-            device = "cpu"
-            _whisper_model = whisper.load_model(model_name, device=device)
+            log.warning(f"Failed to load on CUDA ({e}) — clearing cache and retrying …")
+            try:
+                import torch, gc
+                gc.collect()
+                torch.cuda.empty_cache()
+                _whisper_model = whisper.load_model(model_name, device="cuda")
+                log.info("Whisper loaded on CUDA after cache clear.")
+            except Exception as e2:
+                log.warning(f"CUDA still unavailable ({e2}) — falling back to CPU")
+                device = "cpu"
+                _whisper_model = whisper.load_model(model_name, device=device)
         else:
             raise
     update_status(model_loaded=True, whisper_device=device)
@@ -502,9 +611,15 @@ def transcribe(audio_path: Path, prompt: str | None = None) -> dict:
         result = _whisper_model.transcribe(str(audio_path), **_transcribe_kwargs)
     except Exception as e:
         if _whisper_on_cuda():
-            log.warning(f"GPU error during transcription ({e}) — reloading on CPU")
-            cfg["whisper_device"] = "cpu"
-            load_whisper(cfg["whisper_model"])
+            with _gpu_recovery_lock:
+                if _whisper_on_cuda():
+                    # This thread wins the race — do the reload
+                    log.warning(f"GPU error during transcription ({e}) — reloading on CPU")
+                    cfg["whisper_device"] = "cpu"
+                    load_whisper(cfg["whisper_model"])
+                else:
+                    # Another thread already reloaded — just wait for it to finish
+                    _model_ready.wait()
             result = _whisper_model.transcribe(str(audio_path), **_transcribe_kwargs)
         else:
             raise
@@ -539,7 +654,8 @@ def save_transcript(
     out_path.write_text(md_text, encoding="utf-8")
     log.info(f"Saved transcript → {out_path}")
 
-    _status["transcripts_today"] += 1
+    with _pipeline_lock:
+        _status["transcripts_today"] += 1
     update_status(last_transcript=str(out_path), last_calendar_event=cal_event)
 
     return out_path
@@ -576,13 +692,14 @@ def _whisper_reload_watcher():
         for _ in range(max_p):
             _chunk_semaphore.acquire()
         try:
-            import json as _json
-            cfg.update(_json.loads(Path("config.json").read_text(encoding="utf-8")))
-        except Exception:
-            pass
-        load_whisper(cfg["whisper_model"])
-        for _ in range(max_p):
-            _chunk_semaphore.release()
+            try:
+                cfg.update(json.loads(Path("config.json").read_text(encoding="utf-8")))
+            except Exception:
+                pass
+            load_whisper(cfg["whisper_model"])
+        finally:
+            for _ in range(max_p):
+                _chunk_semaphore.release()
 
 
 def is_silent(audio: np.ndarray, threshold: float) -> bool:
@@ -619,7 +736,9 @@ def recording_loop():
     rec_dir.mkdir(parents=True, exist_ok=True)
 
     _prev_processing_paused = False
+    _first_chunk = True  # first chunk is short to trigger early pipeline diagnostics
 
+    _prune_counter = 0
     try:
         while not _stop_event.is_set():
             if Path(STOP_REQUEST_FILE).exists():
@@ -630,11 +749,19 @@ def recording_loop():
                 _stop_event.set()
                 break
 
+            # Prune finished chunk threads every 10 iterations to avoid unbounded list growth
+            _prune_counter += 1
+            if _prune_counter >= 10:
+                _prune_counter = 0
+                with _chunk_threads_lock:
+                    _chunk_threads[:] = [t for t in _chunk_threads if t.is_alive()]
+
             collected  = []
             started_at = datetime.datetime.now()
             update_status(state="recording", current_chunk_start=started_at.isoformat())
 
-            frames_needed = sr * chunk_s
+            this_chunk_s  = min(60, chunk_s) if _first_chunk else chunk_s
+            frames_needed = sr * this_chunk_s
             frames_got    = 0
 
             while frames_got < frames_needed and not _stop_event.is_set():
@@ -694,6 +821,16 @@ def recording_loop():
                 _save_pipeline()
                 continue
 
+            # Normalize audio level before writing to disk.
+            # Loopback + mic mix is typically very quiet (~0.005–0.02 RMS).
+            # Whisper and pyannote both work better near -20 dBFS (RMS ~0.10).
+            rms = float(np.sqrt(np.mean(audio_np ** 2)))
+            if rms > 1e-6:
+                gain = min(0.10 / rms, 10.0)   # target RMS 0.10, cap at 10×
+                if gain > 1.1:
+                    audio_np = np.clip(audio_np * gain, -0.99, 0.99)
+                    log.debug(f"Audio normalized: gain={gain:.1f}x (raw RMS={rms:.4f})")
+
             wav_path = rec_dir / f"{started_at.strftime('%Y%m%d_%H%M%S')}.wav"
             sf.write(str(wav_path), audio_np, sr)
 
@@ -711,6 +848,7 @@ def recording_loop():
             with _chunk_threads_lock:
                 _chunk_threads.append(t)
             t.start()
+            _first_chunk = False
 
     finally:
         mixer.stop()
@@ -840,14 +978,32 @@ def process_chunk(wav_path: Path, started_at: datetime.datetime, ended_at: datet
                 lbl = seg["speaker_label"]
                 label_to_clips.setdefault(lbl, []).append(seg)
 
+            # Build a flat list of all segment intervals per label for overlap detection
+            all_intervals: list[tuple[float, float, str]] = [
+                (s["start"], s["end"], lbl)
+                for lbl, segs in label_to_clips.items()
+                for s in segs
+            ]
+
             speaker_map: dict[str, dict] = {}
             for label, segs in label_to_clips.items():
-                longest = max(segs, key=lambda s: s["end"] - s["start"])
-                dur = longest["end"] - longest["start"]
+                # Prefer the longest segment that doesn't overlap with other speakers;
+                # fall back to longest overall if every segment is overlapping.
+                def _overlaps_others(seg, _lbl=label):
+                    for iv_s, iv_e, iv_lbl in all_intervals:
+                        if iv_lbl == _lbl:
+                            continue
+                        if seg["start"] < iv_e and seg["end"] > iv_s:
+                            return True
+                    return False
+
+                clean = [s for s in segs if not _overlaps_others(s)]
+                best_seg = max(clean if clean else segs, key=lambda s: s["end"] - s["start"])
+                dur = best_seg["end"] - best_seg["start"]
                 if dur < 1.5:
                     speaker_map[label] = {"name": label, "color": "#888", "is_owner": False}
                     continue
-                result = spk_mod.identify_speaker(wav_path, longest["start"], longest["end"])
+                result = spk_mod.identify_speaker(wav_path, best_seg["start"], best_seg["end"])
                 speaker_map[label] = result
                 if result.get("new"):
                     # Queue this unknown speaker for user labeling
@@ -904,6 +1060,10 @@ def process_chunk(wav_path: Path, started_at: datetime.datetime, ended_at: datet
                 _update_training_speakers(answers)
             update_status(pending_labels=len(labeler_mod.get_pending()))
 
+        # ── Step 6: Upload to Google Drive ─────────────────────────────────
+        if cfg.get("gdrive_folder_id"):
+            upload_to_gdrive(md_path, cfg["gdrive_folder_id"])
+
         if not cfg.get("keep_audio"):
             wav_path.unlink(missing_ok=True)
 
@@ -911,7 +1071,10 @@ def process_chunk(wav_path: Path, started_at: datetime.datetime, ended_at: datet
 
     except Exception as e:
         log.error(f"process_chunk error: {e}", exc_info=True)
-        _status["errors"].append(str(e))
+        errors = _status["errors"]
+        errors.append(str(e))
+        if len(errors) > 50:
+            del errors[:-50]
         update_status(state="recording")
     finally:
         _dec_active(started_at)
@@ -998,11 +1161,37 @@ def main():
     save_config(cfg, args.config)
     update_status(state="starting")
 
-    # Write PID so dashboard can manage the process
-    Path("logs/recorder.pid").write_text(str(os.getpid()))
+    # Kill any existing recorder process (prevents duplicate GPU memory usage)
+    pid_file = Path("logs/recorder.pid")
+    if pid_file.exists():
+        try:
+            old_pid = int(pid_file.read_text().strip())
+            if old_pid != os.getpid():
+                import psutil
+                try:
+                    proc = psutil.Process(old_pid)
+                    if proc.is_running() and "recorder.py" in " ".join(proc.cmdline()):
+                        log.warning(f"Found old recorder (PID {old_pid}) — killing it to free GPU memory …")
+                        proc.kill()
+                        try:
+                            proc.wait(timeout=10)
+                        except psutil.TimeoutExpired:
+                            pass
+                        time.sleep(4)  # let CUDA release memory before loading models
+                        log.info("Old recorder killed.")
+                except psutil.NoSuchProcess:
+                    pass
+                except Exception as e:
+                    log.warning(f"Could not kill old recorder (PID {old_pid}): {e}")
+        except Exception:
+            pass
 
-    # Delete stale stop-request file left over from a previous crashed run
+    # Write PID so dashboard can manage the process
+    pid_file.write_text(str(os.getpid()))
+
+    # Delete stale control files left over from a previous run
     Path(STOP_REQUEST_FILE).unlink(missing_ok=True)
+    Path(RELOAD_WHISPER_FILE).unlink(missing_ok=True)
 
     # Reset stale pipeline counters from previous run
     with _pipeline_lock:
@@ -1032,7 +1221,7 @@ def main():
     _requeue_orphaned_wavs()
 
     # Start session merger background thread
-    _merger = merger_mod.SessionMerger(cfg)
+    _merger = merger_mod.SessionMerger(cfg, upload_fn=upload_to_gdrive)
     _merger.start()
 
     watcher = threading.Thread(target=_whisper_reload_watcher, daemon=True)

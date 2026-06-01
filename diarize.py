@@ -14,6 +14,7 @@ speaker-attributed transcript lines.
 
 import logging
 import tempfile
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -22,7 +23,8 @@ import torchaudio_compat  # noqa: F401 — patches torchaudio before pyannote im
 
 log = logging.getLogger("voice-logger.diarize")
 
-_pipeline = None    # pyannote diarization pipeline (lazy)
+_pipeline      = None    # pyannote diarization pipeline (lazy)
+_pipeline_lock = threading.Lock()
 
 
 def _get_pipeline(hf_token: Optional[str] = None):
@@ -36,20 +38,23 @@ def _get_pipeline(hf_token: Optional[str] = None):
     global _pipeline
     if _pipeline is not None:
         return _pipeline
-    try:
-        from pyannote.audio import Pipeline
-        import torch
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        log.info(f"Loading pyannote pipeline on {device} …")
-        _pipeline = Pipeline.from_pretrained(
-            "pyannote/speaker-diarization-3.1",
-            use_auth_token=hf_token,
-        )
-        _pipeline.to(torch.device(device))
-        log.info("Pyannote pipeline ready.")
-    except Exception as e:
-        log.error(f"Failed to load pyannote pipeline: {e}")
-        _pipeline = None
+    with _pipeline_lock:
+        if _pipeline is not None:  # another thread loaded it while we waited
+            return _pipeline
+        try:
+            from pyannote.audio import Pipeline
+            import torch
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            log.info(f"Loading pyannote pipeline on {device} …")
+            _pipeline = Pipeline.from_pretrained(
+                "pyannote/speaker-diarization-3.1",
+                use_auth_token=hf_token,
+            )
+            _pipeline.to(torch.device(device))
+            log.info("Pyannote pipeline ready.")
+        except Exception as e:
+            log.error(f"Failed to load pyannote pipeline: {e}")
+            _pipeline = None
     return _pipeline
 
 

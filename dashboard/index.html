@@ -1027,7 +1027,10 @@ function initCards() {
 }
 
 // ── Tab switching ──────────────────────────────────────────────────────────
+let _curTab = 'monitor';
+let _lastSimilarRefresh = 0;
 function switchTab(name, el) {
+  _curTab = name;
   document.querySelectorAll('.hdr-tab').forEach(t => t.classList.remove('active'));
   if (el) el.classList.add('active');
   document.getElementById('tab-monitor').style.display     = name==='monitor'     ? 'contents' : 'none';
@@ -1109,7 +1112,7 @@ function renderStatusBlock(s) {
     recStatus.textContent   = 'на паузе';
     recBtn.textContent      = '▶ Возобновить';
     recBtn.className        = 'sr-btn resume';
-  } else if (state === 'recording') {
+  } else if (state === 'recording' || state === 'transcribing' || state === 'diarizing' || state === 'uploading') {
     recDot.style.background = 'var(--danger)';
     recDot.style.animation  = 'pulse 1.2s infinite';
     recStatus.textContent   = 'идёт запись';
@@ -1170,9 +1173,16 @@ function renderStatusBlock(s) {
 
   // ── Service control row ───────────────────────────────────────────────────
   if (state === 'finishing') {
-    ctrl.innerHTML = `<button class="state-btn danger" onclick="stopRecorder()" title="Принудительно перезапустить">↻ Перезапустить</button>`;
+    ctrl.innerHTML = `
+      <button class="state-btn danger" onclick="restartRecorder()">↺ Полный рестарт</button>
+      <button class="state-btn" onclick="runCleanup()">🗑 Очистка</button>`;
+  } else if (state === 'off') {
+    ctrl.innerHTML = `<button class="state-btn" onclick="runCleanup()">🗑 Очистка</button>`;
   } else {
-    ctrl.innerHTML = `<button class="state-btn danger" onclick="stopRecorder()">↻ Выключить</button>`;
+    ctrl.innerHTML = `
+      <button class="state-btn danger" onclick="stopRecorder()">◼ Выключить</button>
+      <button class="state-btn" onclick="restartRecorder()">↺ Перезапустить</button>
+      <button class="state-btn" onclick="runCleanup()">🗑 Очистка</button>`;
   }
 }
 
@@ -1216,6 +1226,7 @@ async function fetchState() {
       applyState(mappedState);
     }
     renderStatusBlock(s);
+    _watchDiagPhase(s);
 
     if (s.current_chunk_start) _chunkStart = new Date(s.current_chunk_start);
 
@@ -1232,6 +1243,16 @@ async function fetchState() {
 
     renderErrors(s.errors || []);
     renderSystemErrors(s.system_errors || []);
+
+    // Auto-refresh similar pairs when: speakers tab open + CUDA active + queue idle
+    if (_curTab === 'speakers' && s.whisper_device === 'cuda') {
+      const isIdle = !['transcribing','diarizing','uploading'].includes(apiState);
+      const now = Date.now();
+      if (isIdle && (now - (_lastSimilarRefresh || 0)) > 60000) {
+        _lastSimilarRefresh = now;
+        fetchSimilarSpeakers();
+      }
+    }
 
     const cal = s.last_calendar_event;
     if (cal && _activeMeetings.length <= 1) {
@@ -1813,6 +1834,41 @@ async function stopRecorder() {
   btns.forEach(b => b.disabled = false);
 }
 
+async function restartRecorder() {
+  if (!confirm('Полный рестарт: текущий чанк будет прерван и попадёт в очередь при следующем запуске. Продолжить?')) return;
+  const btns = document.querySelectorAll('.state-btn, .sr-btn');
+  btns.forEach(b => b.disabled = true);
+  try {
+    applyState('init');
+    pushActivity('var(--warn)', '↺', 'Рестарт сервиса… (ожидание освобождения GPU ~5 сек)', null);
+    await fetch(`${API}/recorder/restart`, { method: 'POST' });
+    _recRunning = true;
+    renderStatusBlock({ recorder_running: true, state: 'init', recording_paused: false, processing_paused: false, pending_wavs: [] });
+    setTimeout(() => fetchState(), 7000);
+  } catch(e) {
+    pushActivity('var(--danger)', '!', 'Ошибка рестарта: ' + e, null);
+  }
+  btns.forEach(b => b.disabled = false);
+}
+
+async function runCleanup() {
+  const btns = document.querySelectorAll('.state-btn, .sr-btn');
+  btns.forEach(b => b.disabled = true);
+  try {
+    const r = await (await fetch(`${API}/cleanup`, { method: 'POST' })).json();
+    const parts = [];
+    if (r.speakers_removed) parts.push(`удалено призраков: ${r.speakers_removed}`);
+    if (r.pipeline_reset)   parts.push('счётчик обработки сброшен');
+    if (r.errors_cleared)   parts.push('ошибки очищены');
+    pushActivity('var(--green)', '✓', 'Очистка: ' + (parts.length ? parts.join(', ') : 'нечего чистить'), null);
+    fetchState();
+    if (_curTab === 'speakers') { fetchSpeakers(); fetchSimilarSpeakers(); }
+  } catch(e) {
+    pushActivity('var(--danger)', '!', 'Ошибка очистки: ' + e, null);
+  }
+  btns.forEach(b => b.disabled = false);
+}
+
 // ── Transcripts / Sessions ────────────────────────────────────────────────
 async function fetchTranscripts() {
   try {
@@ -2363,15 +2419,54 @@ function simPlay(btn, clipPath) {
   _simAudio.onended = () => { btn.classList.remove('playing','was-playing'); btn.textContent = '▶ Слушать'; };
 }
 
-async function simMerge(idA, idB, nameA, nameB) {
+function simMerge(idA, idB, nameA, nameB) {
   const card = document.getElementById(`spr-${idA}-${idB}`);
-  // Keep the one with more samples (backend also does this, but we pick keep_id here)
+  // Toggle: click again to collapse the form
+  const existing = card?.querySelector('.sim-merge-form');
+  if (existing) { existing.remove(); return; }
+
   const sA = _speakers.find(s => s.id === idA)?.samples || 1;
   const sB = _speakers.find(s => s.id === idB)?.samples || 1;
-  const [keepId, dropId, keepName] = sA >= sB ? [idA, idB, nameA] : [idB, idA, nameB];
-  if (!confirm(`Объединить в "${keepName}"? Второй спикер будет удалён.`)) return;
+  const keepName = sA >= sB ? nameA : nameB;
+
+  const attendees = _currentAttendees().filter(n => n !== nameA && n !== nameB);
+  const chipsHtml = attendees.map(n =>
+    `<span class="pop-chip" style="cursor:pointer" onclick="simMergePickName(${JSON.stringify(idA)},${JSON.stringify(n)})">${esc(n)}</span>`
+  ).join('');
+
+  const form = document.createElement('div');
+  form.className = 'sim-merge-form';
+  form.style.cssText = 'margin-top:10px;padding-top:10px;border-top:1px solid rgba(255,255,255,.08)';
+  form.innerHTML = `
+    <div style="font-size:11px;color:var(--muted2);margin-bottom:6px">Имя после объединения:</div>
+    ${chipsHtml ? `<div class="pop-chips" style="margin-bottom:8px">${chipsHtml}</div>` : ''}
+    <div style="display:flex;gap:6px;align-items:center">
+      <input class="pending-input" id="sim-merge-name-${idA}" value="${esc(keepName)}"
+        style="flex:1" placeholder="Имя…"
+        onkeydown="if(event.key==='Enter')simMergeConfirm('${idA}','${idB}','${esc(nameA)}','${esc(nameB)}');if(event.key==='Escape')this.closest('.sim-merge-form').remove()">
+      <button class="sim-merge-btn" onclick="simMergeConfirm('${idA}','${idB}','${esc(nameA)}','${esc(nameB)}')">OK</button>
+      <button class="sim-diff-btn" onclick="this.closest('.sim-merge-form').remove()">✕</button>
+    </div>`;
+  card?.appendChild(form);
+  document.getElementById(`sim-merge-name-${idA}`)?.focus();
+  document.getElementById(`sim-merge-name-${idA}`)?.select();
+}
+
+function simMergePickName(idA, name) {
+  const input = document.getElementById(`sim-merge-name-${idA}`);
+  if (input) { input.value = name; input.focus(); }
+}
+
+async function simMergeConfirm(idA, idB, nameA, nameB) {
+  const card  = document.getElementById(`spr-${idA}-${idB}`);
+  const input = document.getElementById(`sim-merge-name-${idA}`);
+  const newName = input?.value?.trim();
+  if (!newName) return;
+  const sA = _speakers.find(s => s.id === idA)?.samples || 1;
+  const sB = _speakers.find(s => s.id === idB)?.samples || 1;
+  const [keepId, dropId] = sA >= sB ? [idA, idB] : [idB, idA];
   await fetch(`${API}/speakers/merge`, { method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ keep_id: keepId, drop_id: dropId }) });
+    body: JSON.stringify({ keep_id: keepId, drop_id: dropId, new_name: newName }) });
   card?.remove();
   fetchSpeakers();
   fetchSimilarSpeakers();
@@ -2405,6 +2500,22 @@ async function commitSpkRename(id) {
 
 // ── Inline transcript speaker rename ──────────────────────────────────────
 let _spkPopTarget = null;
+
+function _currentAttendees() {
+  const parseName = raw => {
+    if (!raw || !raw.trim()) return null;
+    const t = raw.trim();
+    if (t.includes('@')) return t.split('@')[0].replace(/[._]/g,' ').replace(/\b\w/g,c=>c.toUpperCase());
+    return t;
+  };
+  const parts = new Set();
+  const addRaw = raw => (raw||'').split(/[;,]/).map(s=>parseName(s)).filter(Boolean).forEach(n=>parts.add(n));
+  (_activeMeetings||[]).forEach(m => { addRaw(m.organizer); addRaw(m.attendees); });
+  (_todayMeetings||[]).forEach(m => { addRaw(m.organizer); addRaw(m.attendees); });
+  // Also include already-named known speakers
+  (_speakers||[]).filter(s => !s.auto_unknown && !s.name.startsWith('Speaker_')).forEach(s => parts.add(s.name));
+  return [...parts];
+}
 
 function _meetingParticipants(txPath) {
   // Find the agenda item that owns this transcript, get its meeting participants
@@ -2563,10 +2674,17 @@ function renderPendingSection(labels) {
     return;
   }
   const knownSpks = _speakers.filter(s => !s.auto_unknown);
+  const meetingNames = _currentAttendees();
   el.innerHTML = labels.map((lbl, i) => {
-    const chips = knownSpks.filter(s => s.name !== lbl.speaker_name).map(s =>
+    // Meeting attendee chips (name only — no targetId, free-text rename)
+    const attendeeChips = meetingNames.filter(n => n !== lbl.speaker_name).map(n =>
+      `<span class="pop-chip" style="cursor:pointer;border-color:rgba(124,106,247,.5)" onclick="piPickName(${i},${JSON.stringify(n)})">${esc(n)}</span>`
+    ).join('');
+    // Known-speaker merge chips (set targetId for merge)
+    const mergeChips = knownSpks.filter(s => s.name !== lbl.speaker_name && !meetingNames.includes(s.name)).map(s =>
       `<span class="pop-chip" style="cursor:pointer" onclick="piPickSpeaker(${i},${JSON.stringify(s.id)},${JSON.stringify(s.name)})">${esc(s.name)}</span>`
     ).join('');
+    const allChips = [attendeeChips, mergeChips].filter(Boolean).join('');
     return `
     <div class="pending-card">
       <div class="pending-card-meta">${esc(lbl.speaker_name)} · ${nowHM()}</div>
@@ -2574,7 +2692,8 @@ function renderPendingSection(labels) {
       <div class="pending-samples">
         ${(lbl.sample_lines || []).map(l => `<div class="pending-sample">"${esc(l)}"</div>`).join('')}
       </div>
-      ${chips ? `<div class="pop-chips" style="margin-bottom:6px">${chips}</div>` : ''}
+      ${attendeeChips ? `<div style="font-size:10px;color:var(--muted2);margin-bottom:3px">Участники встречи:</div>` : ''}
+      ${allChips ? `<div class="pop-chips" style="margin-bottom:6px">${allChips}</div>` : ''}
       <div class="pending-row">
         <input type="text" class="pending-input" id="pi-${i}" placeholder="Введите имя…"
           onkeydown="if(event.key==='Enter')submitPendingLabel(${i},'${esc(lbl.request_id)}')"
@@ -2588,6 +2707,14 @@ function renderPendingSection(labels) {
       </div>
     </div>`;
   }).join('');
+}
+
+function piPickName(idx, name) {
+  const input = document.getElementById(`pi-${idx}`);
+  if (!input) return;
+  input.value = name;
+  delete input.dataset.targetId;
+  input.focus();
 }
 
 function piPickSpeaker(idx, id, name) {
@@ -2640,14 +2767,20 @@ function showLabelBanner(idx) {
   document.getElementById('lb-name-input').value = '';
   _bannerTargetId = null;
 
-  // Quick-pick chips for known speakers
+  // Quick-pick chips: meeting attendees first, then known speakers for merge
   const chipsEl = document.getElementById('lb-speaker-chips');
-  const knownSpks = _speakers.filter(s => !s.auto_unknown && s.name !== lbl.speaker_name);
-  if (knownSpks.length) {
+  const attendeeNames = _currentAttendees().filter(n => n !== lbl.speaker_name);
+  const knownSpks = _speakers.filter(s => !s.auto_unknown && s.name !== lbl.speaker_name && !attendeeNames.includes(s.name));
+  const attendeeChips = attendeeNames.map(n =>
+    `<span class="pop-chip" style="cursor:pointer;border-color:rgba(124,106,247,.5)" onclick="lbPickName(${JSON.stringify(n)})">${esc(n)}</span>`
+  ).join('');
+  const mergeChips = knownSpks.map(s =>
+    `<span class="pop-chip" style="cursor:pointer" onclick="lbPickSpeaker(${JSON.stringify(s.id)},${JSON.stringify(s.name)})">${esc(s.name)}</span>`
+  ).join('');
+  const allChips = [attendeeChips, mergeChips].filter(Boolean).join('');
+  if (allChips) {
     chipsEl.style.display = 'block';
-    chipsEl.innerHTML = knownSpks.map(s =>
-      `<span class="pop-chip" style="cursor:pointer" onclick="lbPickSpeaker(${JSON.stringify(s.id)},${JSON.stringify(s.name)})">${esc(s.name)}</span>`
-    ).join('');
+    chipsEl.innerHTML = (attendeeChips ? `<div style="font-size:10px;color:var(--muted2);margin-bottom:3px">Участники встречи:</div>` : '') + allChips;
   } else {
     chipsEl.style.display = 'none';
     chipsEl.innerHTML = '';
@@ -2655,6 +2788,12 @@ function showLabelBanner(idx) {
 
   document.getElementById('label-banner').style.display = '';
   setTimeout(() => document.getElementById('lb-name-input').focus(), 100);
+}
+
+function lbPickName(name) {
+  document.getElementById('lb-name-input').value = name;
+  _bannerTargetId = null;
+  document.getElementById('lb-name-input').focus();
 }
 
 function lbPickSpeaker(id, name) {
@@ -2730,22 +2869,50 @@ async function clearMeetingSelection() {
 }
 
 // ── Diagnostics ───────────────────────────────────────────────────────────
-let _diagLastFailed = [];
+let _diagLastFailed  = [];
+let _diagPhaseDone   = new Set();   // phases already triggered
+let _diagPrevState   = null;
+let _diagPrevTxCount = 0;
 
-async function fetchDiagnostics() {
+// Called from fetchState() to trigger phase transitions automatically
+function _watchDiagPhase(s) {
+  const state    = s.state || 'off';
+  const running  = s.recorder_running ?? true;
+  const txCount  = s.transcripts_today || 0;
+  const active   = running && !['off', 'loading_model'].includes(state);
+
+  if (active && !_diagPhaseDone.has('recording')) {
+    _diagPhaseDone.add('recording');
+    setTimeout(() => fetchDiagnostics('recording'), 800);
+  }
+  if (txCount > 0 && _diagPrevTxCount === 0 && !_diagPhaseDone.has('pipeline')) {
+    _diagPhaseDone.add('pipeline');
+    setTimeout(() => fetchDiagnostics('pipeline'), 1500);
+  }
+  _diagPrevState   = state;
+  _diagPrevTxCount = txCount;
+}
+
+const _PHASE_LABEL = { init: 'инициализация', recording: 'запись', pipeline: 'полный пайплайн' };
+
+async function fetchDiagnostics(phase) {
+  phase = phase || 'pipeline';
   const body = document.getElementById('diag-body');
   const btn  = document.getElementById('diag-btn');
-  body.innerHTML = '<div class="diag-empty"><span class="diag-spinner"></span> Проверка…</div>';
+  const label = _PHASE_LABEL[phase] ? ` · ${_PHASE_LABEL[phase]}` : '';
+  body.innerHTML = `<div class="diag-empty"><span class="diag-spinner"></span> Проверка${label}…</div>`;
   if (btn) btn.disabled = true;
   try {
-    const d = await (await fetch(`${API}/diagnostics`)).json();
+    const d = await (await fetch(`${API}/diagnostics?phase=${phase}`)).json();
     const rows = (d.checks || []).map(c => `
       <div class="diag-row">
         <div class="diag-dot ${c.status || 'unknown'}"></div>
         <div class="diag-name">${esc(c.name)}</div>
         <div class="diag-detail">${esc(c.detail || '—')}</div>
       </div>`).join('');
-    const ts = d.timestamp ? `<div class="diag-ts">проверено ${d.timestamp.replace('T',' ')}</div>` : '';
+    const phaseLabel = _PHASE_LABEL[d.phase] ? ` · фаза: ${_PHASE_LABEL[d.phase]}` : '';
+    const uptimeStr  = d.uptime_s != null ? ` · сервис ${d.uptime_s}с` : '';
+    const ts = d.timestamp ? `<div class="diag-ts">проверено ${d.timestamp.replace('T',' ')}${phaseLabel}${uptimeStr}</div>` : '';
     _diagLastFailed = (d.checks || []).filter(c => c.status === 'error' || c.status === 'warn');
     const fixBtn = _diagLastFailed.length > 0
       ? `<button class="btn" id="diag-fix-btn" onclick="runDiagFix()"
@@ -2803,7 +2970,8 @@ try {
 initCards();
 fetchConfig();
 fetchState();
-fetchDiagnostics();
+// Init diagnostics after 5s — gives Whisper/Obsidian/Calendar time to start
+setTimeout(() => { if (!_diagPhaseDone.has('init')) { _diagPhaseDone.add('init'); fetchDiagnostics('init'); } }, 5000);
 fetchTranscripts();
 fetchSpeakers();
 fetchPendingLabels();

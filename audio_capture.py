@@ -96,6 +96,18 @@ def find_loopback_device() -> int | None:
     return None
 
 
+def _resample(data: np.ndarray, src_sr: int, dst_sr: int) -> np.ndarray:
+    """Linear-interpolation resample — good enough for speech at moderate ratios."""
+    if src_sr == dst_sr:
+        return data
+    n_dst = int(len(data) * dst_sr / src_sr)
+    return np.interp(
+        np.linspace(0, len(data) - 1, n_dst),
+        np.arange(len(data)),
+        data,
+    ).astype(np.float32)
+
+
 def find_mic_device() -> int | None:
     """Return default microphone device index, or None to use system default."""
     try:
@@ -136,6 +148,7 @@ class AudioMixer:
         self._mic_stream      = None
         self._loopback_stream = None
         self._mixer_thread    = None
+        self._loopback_native_sr: int = sample_rate  # updated in start() if device needs native rate
 
         if self.loopback_device is not None:
             log.info(f"AudioMixer: mic + loopback [{self.loopback_device}] → mix")
@@ -151,8 +164,9 @@ class AudioMixer:
     def _loopback_callback(self, indata, frames, time_info, status):
         if status:
             log.debug(f"Loopback status: {status}")
-        # Loopback is usually stereo → downmix to mono
         mono = indata.mean(axis=1) if indata.ndim > 1 else indata[:, 0]
+        if self._loopback_native_sr != self.sr:
+            mono = _resample(mono, self._loopback_native_sr, self.sr)
         self._loopback_q.put(mono.copy())
 
     # ── Mixer thread ────────────────────────────────────────────────────────
@@ -213,16 +227,32 @@ class AudioMixer:
             try:
                 lb_info = sd.query_devices(self.loopback_device)
                 lb_ch   = min(2, lb_info["max_input_channels"])
-                self._loopback_stream = sd.InputStream(
-                    device=self.loopback_device,
-                    samplerate=self.sr,
-                    channels=lb_ch,
-                    dtype="float32",
-                    callback=self._loopback_callback,
-                    blocksize=blocksize,
-                )
-                self._loopback_stream.start()
-                log.info(f"Loopback stream started: [{self.loopback_device}] {lb_info['name']}")
+                opened  = False
+                for try_sr in [self.sr, int(lb_info["default_samplerate"])]:
+                    try:
+                        self._loopback_stream = sd.InputStream(
+                            device=self.loopback_device,
+                            samplerate=try_sr,
+                            channels=lb_ch,
+                            dtype="float32",
+                            callback=self._loopback_callback,
+                            blocksize=int(try_sr * 0.5),
+                        )
+                        self._loopback_stream.start()
+                        self._loopback_native_sr = try_sr
+                        opened = True
+                        if try_sr != self.sr:
+                            log.info(
+                                f"Loopback stream started at native {try_sr} Hz "
+                                f"(resampling to {self.sr} Hz): [{self.loopback_device}] {lb_info['name']}"
+                            )
+                        else:
+                            log.info(f"Loopback stream started: [{self.loopback_device}] {lb_info['name']}")
+                        break
+                    except Exception as e_sr:
+                        log.debug(f"Loopback at {try_sr} Hz failed: {e_sr}")
+                if not opened:
+                    raise RuntimeError("all sample rates failed")
             except Exception as e:
                 log.warning(f"Loopback stream failed ({e}) — mic only mode.")
                 self._loopback_stream = None

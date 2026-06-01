@@ -95,6 +95,15 @@ def enqueue_labeling_request(
             s, e = int(clip_start * sr), int(clip_end * sr)
             clip = data[s:e]
 
+            # Boost clip to a fixed loudness target.
+            # Loopback+mic mix is recorded at very low gain, so raw clips are nearly
+            # inaudible. We target RMS ~0.15 (roughly -16 dBFS) with a hard peak cap
+            # at 0.95 to avoid clipping.
+            rms = float(np.sqrt(np.mean(clip ** 2)))
+            if rms > 1e-6:
+                gain = min(0.15 / rms, 0.95 / (np.max(np.abs(clip)) + 1e-9))
+                clip = clip * gain
+
             clip_dir  = Path("speakers/clips")
             clip_dir.mkdir(parents=True, exist_ok=True)
             clip_path = clip_dir / f"{request_id}.wav"
@@ -200,6 +209,32 @@ def drain_answers() -> list[dict]:
         items = list(_answers.values())
         _answers.clear()
         return items
+
+
+def amplify_existing_clips(target_rms: float = 0.15) -> int:
+    """Re-normalize all saved speaker clips to target_rms. Returns number of files processed."""
+    import soundfile as sf, numpy as np
+    clips_dir = Path("speakers/clips")
+    if not clips_dir.exists():
+        return 0
+    count = 0
+    for wav in clips_dir.glob("*.wav"):
+        try:
+            data, sr = sf.read(str(wav))
+            rms = float(np.sqrt(np.mean(data ** 2)))
+            if rms < 1e-6:
+                continue
+            gain = min(target_rms / rms, 0.95 / (float(np.max(np.abs(data))) + 1e-9))
+            if abs(gain - 1.0) < 0.05:   # already close to target — skip
+                continue
+            data = data * gain
+            sf.write(str(wav), data, sr)
+            count += 1
+        except Exception as ex:
+            log.warning(f"Could not amplify clip {wav.name}: {ex}")
+    if count:
+        log.info(f"Amplified {count} speaker clip(s) to target RMS={target_rms}")
+    return count
 
 
 def apply_pending_renames(transcript_path: Path, answers: list[dict]):

@@ -45,24 +45,44 @@ start.bat
 
 The dashboard opens at **http://localhost:7331**
 
+## Required tokens and credentials
+
+### 1. HuggingFace token — required for speaker diarization
+
+Pyannote diarization models are gated on HuggingFace — you need a free account and must accept each model's license:
+
+1. Create account at https://huggingface.co and go to https://huggingface.co/settings/tokens
+2. Create a token with **Read** access
+3. Accept the license for both models (you must be logged in):
+   - https://huggingface.co/pyannote/speaker-diarization-3.1
+   - https://huggingface.co/pyannote/segmentation-3.0
+4. Put the token in `config.json` → `hf_token`
+
+Without this token diarization is disabled and all speakers appear as "Speaker_N".
+
+### 2. Obsidian Local REST API key — optional, for syncing transcripts to Obsidian
+
+1. Install the [Local REST API](https://github.com/coddingtonbear/obsidian-local-rest-api) community plugin in Obsidian
+2. Open plugin settings → copy the **API Key**
+3. Put it in `config.json` → `obsidian_api_key`
+4. Set `obsidian_url` to `https://127.0.0.1:27124` (default) or whatever port the plugin shows
+
+Without this key Obsidian sync is skipped; transcripts are still saved locally.
+
 ## Configuration
 
 Copy `config.example.json` → `config.json` and set:
 
-| Key | Description |
-|-----|-------------|
-| `hf_token` | HuggingFace token — needed for pyannote diarization models |
-| `whisper_model` | `tiny` / `base` / `small` / `medium` / `large` |
-| `language` | `ru`, `en`, etc. — or `null` for auto-detect |
-| `chunk_seconds` | Recording chunk length in seconds (default 300) |
-| `obsidian_url` | Local REST API URL if using Obsidian sync |
-| `obsidian_api_key` | Local REST API key (from Obsidian plugin settings) |
-
-HuggingFace token: https://huggingface.co/settings/tokens  
-You must also accept the pyannote model license at:  
-https://huggingface.co/pyannote/speaker-diarization-3.1
-
-For Obsidian sync, install the [Local REST API](https://github.com/coddingtonbear/obsidian-local-rest-api) plugin and copy the API key to `config.json`.
+| Key | Required | Description |
+|-----|----------|-------------|
+| `hf_token` | Yes (for diarization) | HuggingFace token — see section above |
+| `whisper_model` | No | `tiny` / `base` / `small` / `medium` / `large` (default `large`) |
+| `language` | No | `ru`, `en`, etc. — or `null` for auto-detect |
+| `chunk_seconds` | No | Recording chunk length in seconds (default 300) |
+| `obsidian_api_key` | No | Obsidian Local REST API key — see section above |
+| `obsidian_url` | No | Obsidian REST API URL (default `https://127.0.0.1:27124`) |
+| `loopback_device` | No | WASAPI loopback device index — `null` = auto-detect |
+| `gpu_memory_fraction` | No | Fraction of GPU VRAM to use (default `0.8`, raise to `0.9` if OOM) |
 
 ## Running
 
